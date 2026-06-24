@@ -26,6 +26,12 @@
 // TODO: Fix game dependency?
 #include <TFE_DarkForces/logic.h>
 
+#if TFE_N64_DIRECT_MISSION_RENDER
+// Defined in n64/tfe_mission_probe_shims.cpp: builds a minimal player eye + camera
+// from the level's .O player start for the geometry-only direct-render lane.
+void n64_mission_setupPlayerEye(const char* levelName, u8 difficulty);
+#endif
+
 namespace TFE_DarkForces
 {
 	extern u8 s_levelPalette[];
@@ -65,6 +71,14 @@ namespace TFE_Jedi
 			s_levelState.complete[COMPL_ITEM][i] = JFALSE;
 		}
 
+	#if TFE_N64_DIRECT_MISSION_RENDER
+		(void)difficulty;
+		// Direct-render lane only needs geometry+textures while probe stubs own gameplay systems.
+		if (!level_loadGeometry(levelName)) { return JFALSE; }
+		// N64: build a minimal player eye + camera from the .O player start so the real
+		// software renderer draws the level from the correct viewpoint.
+		::n64_mission_setupPlayerEye(levelName, difficulty);
+	#else
 		// Settings helper
 		TFE_Settings::setLevelName(levelName);
 
@@ -79,6 +93,7 @@ namespace TFE_Jedi
 
 		// TFE - Level Script Level Start
 		startLevelScript(levelName);
+	#endif
 
 		return JTRUE;
 	}
@@ -161,7 +176,9 @@ namespace TFE_Jedi
 		s_dataIndex = 0;
 		s_levelState.minLayer = INT_MAX;
 		s_levelState.maxLayer = INT_MIN;
+	#if !TFE_N64_DIRECT_MISSION_RENDER
 		message_free();
+	#endif
 
 		// Try loading as an LVB
 		if (level_loadGeometryBin(levelName, s_buffer))

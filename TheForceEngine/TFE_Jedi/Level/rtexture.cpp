@@ -60,23 +60,33 @@ namespace TFE_Jedi
 		return res;
 	}
 
+	u16 readU16LE(const u8* data)
+	{
+		return (u16)data[0] | ((u16)data[1] << 8u);
+	}
+
+	u32 readU32LE(const u8* data)
+	{
+		return (u32)data[0] | ((u32)data[1] << 8u) | ((u32)data[2] << 16u) | ((u32)data[3] << 24u);
+	}
+
 	s16 readShort(const u8*& data)
 	{
-		s16 res = *((s16*)data);
+		s16 res = (s16)readU16LE(data);
 		data += 2;
 		return res;
 	}
 
 	u16 readUShort(const u8*& data)
 	{
-		u16 res = *((u16*)data);
+		u16 res = readU16LE(data);
 		data += 2;
 		return res;
 	}
 
 	s32 readInt(const u8*& data)
 	{
-		s32 res = *((s32*)data);
+		s32 res = (s32)readU32LE(data);
 		data += 4;
 		return res;
 	}
@@ -345,6 +355,11 @@ namespace TFE_Jedi
 		file.close();
 
 		TextureData* texture = (TextureData*)region_alloc(s_texState.memoryRegion, sizeof(TextureData));
+		if (!texture)
+		{
+			TFE_System::logWrite(LOG_ERROR, "bitmap_load", "Out of memory allocating texture header for '%s'.", filepath);
+			return nullptr;
+		}
 		memset(texture, 0, sizeof(TextureData));
 
 		const u8* data = s_buffer.data();
@@ -391,11 +406,16 @@ namespace TFE_Jedi
 			{
 				texture->dataSize = texture->width * texture->height;
 				texture->image = (u8*)region_alloc(s_texState.memoryRegion, texture->dataSize);
+				if (!texture->image)
+				{
+					TFE_System::logWrite(LOG_ERROR, "bitmap_load", "Out of memory allocating %zu bytes for '%s'.", texture->dataSize, filepath);
+					return nullptr;
+				}
 
 				const u8* inBuffer = data;
 				data += inSize;
 
-				const u32* columns = (u32*)data;
+				const u8* columnData = data;
 				data += sizeof(u32) * texture->width;
 				assert(data <= end);
 
@@ -404,7 +424,13 @@ namespace TFE_Jedi
 					u8* dst = texture->image;
 					for (s32 i = 0; i < texture->width; i++, dst += texture->height)
 					{
-						const u8* src = &inBuffer[columns[i]];
+						u32 columnOffset = readU32LE(columnData + i * sizeof(u32));
+						if ((s32)columnOffset >= inSize)
+						{
+							memset(dst, 0, texture->height);
+							continue;
+						}
+						const u8* src = &inBuffer[columnOffset];
 						decompressColumn_Type1(src, dst, texture->height);
 					}
 				}
@@ -413,7 +439,13 @@ namespace TFE_Jedi
 					u8* dst = texture->image;
 					for (s32 i = 0; i < texture->width; i++, dst += texture->height)
 					{
-						const u8* src = &inBuffer[columns[i]];
+						u32 columnOffset = readU32LE(columnData + i * sizeof(u32));
+						if ((s32)columnOffset >= inSize)
+						{
+							memset(dst, 0, texture->height);
+							continue;
+						}
+						const u8* src = &inBuffer[columnOffset];
 						decompressColumn_Type2(src, dst, texture->height);
 					}
 				}
@@ -424,12 +456,25 @@ namespace TFE_Jedi
 			{
 				texture->dataSize = inSize;
 				texture->image = (u8*)region_alloc(s_texState.memoryRegion, texture->dataSize);
+				if (!texture->image)
+				{
+					TFE_System::logWrite(LOG_ERROR, "bitmap_load", "Out of memory allocating %zu bytes for '%s'.", texture->dataSize, filepath);
+					return nullptr;
+				}
 				memcpy(texture->image, data, texture->dataSize);
 				data += texture->dataSize;
 				assert(data <= end);
 
 				texture->columns = (u32*)region_alloc(s_texState.memoryRegion, texture->width * sizeof(u32));
-				memcpy(texture->columns, data, texture->width * sizeof(u32));
+				if (!texture->columns)
+				{
+					TFE_System::logWrite(LOG_ERROR, "bitmap_load", "Out of memory allocating columns for '%s'.", filepath);
+					return nullptr;
+				}
+				for (s32 i = 0; i < texture->width; ++i)
+				{
+					texture->columns[i] = readU32LE(data + i * sizeof(u32));
+				}
 				data += texture->width * sizeof(u32);
 				assert(data <= end);
 			}
@@ -448,6 +493,11 @@ namespace TFE_Jedi
 
 			// Allocate and read the BM image.
 			texture->image = (u8*)region_alloc(s_texState.memoryRegion, texture->dataSize);
+			if (!texture->image)
+			{
+				TFE_System::logWrite(LOG_ERROR, "bitmap_load", "Out of memory allocating %zu bytes for '%s'.", texture->dataSize, filepath);
+				return nullptr;
+			}
 			memcpy(texture->image, data, texture->dataSize);
 			data += texture->dataSize;
 			assert(data <= end);
@@ -486,6 +536,10 @@ namespace TFE_Jedi
 	TextureData* bitmap_loadFromMemory(const u8* data, size_t size, u32 decompress)
 	{
 		TextureData* texture = (TextureData*)malloc(sizeof(TextureData));
+		if (!texture)
+		{
+			return nullptr;
+		}
 		const u8* fheader = data;
 		data += 3;
 
@@ -523,11 +577,16 @@ namespace TFE_Jedi
 			{
 				texture->dataSize = texture->width * texture->height;
 				texture->image = (u8*)malloc(texture->dataSize);
+				if (!texture->image)
+				{
+					free(texture);
+					return nullptr;
+				}
 
 				const u8* inBuffer = data;
 				data += inSize;
 
-				const u32* columns = (u32*)data;
+				const u8* columnData = data;
 				data += sizeof(u32) * texture->width;
 
 				if (texture->compressed == 1)
@@ -535,7 +594,13 @@ namespace TFE_Jedi
 					u8* dst = texture->image;
 					for (s32 i = 0; i < texture->width; i++, dst += texture->height)
 					{
-						const u8* src = &inBuffer[columns[i]];
+						u32 columnOffset = readU32LE(columnData + i * sizeof(u32));
+						if ((s32)columnOffset >= inSize)
+						{
+							memset(dst, 0, texture->height);
+							continue;
+						}
+						const u8* src = &inBuffer[columnOffset];
 						decompressColumn_Type1(src, dst, texture->height);
 					}
 				}
@@ -544,7 +609,13 @@ namespace TFE_Jedi
 					u8* dst = texture->image;
 					for (s32 i = 0; i < texture->width; i++, dst += texture->height)
 					{
-						const u8* src = &inBuffer[columns[i]];
+						u32 columnOffset = readU32LE(columnData + i * sizeof(u32));
+						if ((s32)columnOffset >= inSize)
+						{
+							memset(dst, 0, texture->height);
+							continue;
+						}
+						const u8* src = &inBuffer[columnOffset];
 						decompressColumn_Type2(src, dst, texture->height);
 					}
 				}
@@ -561,7 +632,10 @@ namespace TFE_Jedi
 				texture->columns = (u32*)malloc(texture->width * sizeof(u32));
 				if (texture->columns)
 				{
-					memcpy(texture->columns, data, texture->width * sizeof(u32));
+					for (s32 i = 0; i < texture->width; ++i)
+					{
+						texture->columns[i] = readU32LE(data + i * sizeof(u32));
+					}
 				}
 				data += texture->width * sizeof(u32);
 			}
@@ -615,7 +689,7 @@ namespace TFE_Jedi
 		}
 
 		// In the original DOS code, this is directly set to pointers. But since TFE is compiled as 64-bit, pointers are not the correct size.
-		const u32* textureOffsets = (u32*)(tex->image + 2);
+		const u8* textureOffsets = tex->image + 2;
 		AnimatedTexture* anim = (AnimatedTexture*)allocator_newItem(s_texState.textureAnimAlloc);
 		if (!anim)
 			return nullptr;
@@ -629,35 +703,58 @@ namespace TFE_Jedi
 		anim->frameList = (TextureData**)level_alloc(sizeof(TextureData**) * anim->count);
 		// Allocate frame memory here since load-in-place does not work because structure size changes.
 		TextureData* outFrames = (TextureData*)level_alloc(sizeof(TextureData) * anim->count);
-		memset(outFrames, 0, sizeof(TextureData) * anim->count);
 		assert(anim->frameList);
+		if (!anim->frameList || !outFrames)
+		{
+			TFE_System::logWrite(LOG_ERROR, "bitmap_createAnimatedTexture", "Out of memory allocating %d animation frames.", anim->count);
+			return nullptr;
+		}
+		memset(outFrames, 0, sizeof(TextureData) * anim->count);
 
 		const u8* base = tex->image + 2;
 		const s64 imageBase = s64(tex->image);
 		for (s32 i = 0; i < anim->count; i++)
 		{
-			const TextureData* frame = (TextureData*)(base + textureOffsets[i]);
+			u32 frameOffset = readU32LE(textureOffsets + i * sizeof(u32));
+			const u8* framePtr = base + frameOffset;
+			const TextureData* frame = (TextureData*)framePtr;
 			outFrames[i] = *frame;
 
+			// BM frame sub-header numeric fields are stored little-endian on disk; decode
+			// explicitly so big-endian targets (N64) do not byte-swap width/height into huge values.
+			outFrames[i].width    = readU16LE(framePtr + 0x00);
+			outFrames[i].height   = readU16LE(framePtr + 0x02);
+			outFrames[i].uvWidth  = (s16)readU16LE(framePtr + 0x04);
+			outFrames[i].uvHeight = (s16)readU16LE(framePtr + 0x06);
+			outFrames[i].dataSize = readU32LE(framePtr + 0x08);
+
 			// Somehow this doesn't crash in DOS...
-			if (frame->width >= 16384 || frame->height >= 16384)
+			if (outFrames[i].width >= 16384 || outFrames[i].height >= 16384)
 			{
 				outFrames[i] = outFrames[0];
 			}
 
 			// Allocate an image buffer since everything no longer fits nicely.
-			outFrames[i].image = (u8*)level_alloc(outFrames[i].width * outFrames[i].height);
-			memset(outFrames[i].image, 0, outFrames[i].width * outFrames[i].height);
-			
+			const u32 frameImageSize = (u32)outFrames[i].width * (u32)outFrames[i].height;
+			outFrames[i].image = (u8*)level_alloc(frameImageSize);
+			if (outFrames[i].image)
+			{
+				memset(outFrames[i].image, 0, frameImageSize);
+			}
+
 			// Verify that we don't read past the end of the buffer.
-			const s64 curOffset = s64((u8*)frame + 0x1c - imageBase);
+			const s64 curOffset = s64(framePtr + 0x1c - imageBase);
 			const s64 maxSize = tex->dataSize - curOffset;
-			const s64 sizeToCopy = (s64)max(0, min(maxSize, outFrames[i].width * outFrames[i].height));
-			memcpy(outFrames[i].image, (u8*)frame + 0x1c, sizeToCopy);
+			const s64 frameSize = (s64)outFrames[i].width * (s64)outFrames[i].height;
+			const s64 sizeToCopy = maxSize < frameSize ? maxSize : frameSize;
+			if (outFrames[i].image && sizeToCopy > 0)
+			{
+				memcpy(outFrames[i].image, framePtr + 0x1c, (size_t)sizeToCopy);
+			}
 			
 			// We have to make sure the structure offsets line up with DOS...
-			outFrames[i].flags = *((u8*)frame + 0x18);
-			outFrames[i].compressed = *((u8*)frame + 0x19);
+			outFrames[i].flags = *(framePtr + 0x18);
+			outFrames[i].compressed = *(framePtr + 0x19);
 			outFrames[i].animIndex = index;
 			outFrames[i].frameIdx = i;
 			outFrames[i].animPtr = anim;
@@ -698,7 +795,7 @@ namespace TFE_Jedi
 
 		if (frameRate)
 		{
-			anim->delay = time_frameRateToDelay(frameRate);	// Delay is in "ticks."
+			anim->delay = time_frameRateToDelay((u32)frameRate);	// Delay is in "ticks."
 			anim->nextTick = 0;
 			*texture = anim->frameList[0];
 		}

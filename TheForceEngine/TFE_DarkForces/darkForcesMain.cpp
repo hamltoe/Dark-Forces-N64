@@ -1,5 +1,9 @@
 #include <cstring>
 
+#if defined(N64)
+#include <debug.h>
+#endif
+
 #include "darkForcesMain.h"
 #include "agent.h"
 #include "automap.h"
@@ -670,14 +674,58 @@ namespace TFE_DarkForces
 		} break;
 		case GSTATE_MISSION:
 		{
+			#if defined(N64)
+			static JBool s_loggedMissionTaskActive = JFALSE;
+			#endif
+
 			// At this point the mission has already been launched.
 			// The task system will take over. Basically every frame we just check to see if there are any tasks running.
 			if (task_getCount())
 			{
+				#if defined(N64)
+				if (!s_loggedMissionTaskActive)
+				{
+					s_loggedMissionTaskActive = JTRUE;
+					debugf("[df_runtime_real] mission state active tasks=%ld paused=%d\n",
+						(long)task_getCount(),
+						(int)s_gamePaused);
+				}
+				if ((s_curTick & 127) == 0)
+				{
+					debugf("[df_runtime_real] mission heartbeat tick=%ld tasks=%ld paused=%d\n",
+						(long)s_curTick,
+						(long)task_getCount(),
+						(int)s_gamePaused);
+				}
+				#endif
+
 				if (!s_gamePaused && TFE_A11Y::gameplayCaptionsEnabled()) { TFE_A11Y::drawCaptions(); }
 			}
 			else
 			{
+				#if defined(N64)
+				if (s_loggedMissionTaskActive)
+				{
+					debugf("[df_runtime_real] mission tasks drained levelComplete=%d state=%d\n",
+						(int)s_levelComplete,
+						(int)s_runGameState.state);
+				}
+				s_loggedMissionTaskActive = JFALSE;
+				#endif
+
+				#if defined(N64)
+				if (!s_levelComplete)
+				{
+					// N64 staged runtime bring-up: if no mission tasks are active here,
+					// avoid a tight relaunch loop and return to agent menu.
+					debugf("[df_runtime_real] mission bootstrap produced no active tasks; returning to agent menu\n");
+					s_runGameState.state = GSTATE_AGENT_MENU;
+					s_invalidLevelIndex = JTRUE;
+					s_runGameState.abortLevel = JFALSE;
+					s_runGameState.cutsceneIndex = 0;
+				}
+				#endif
+
 				// We have returned from the mission tasks.
 				renderer_reset();
 				gameMusic_stop();
@@ -698,8 +746,16 @@ namespace TFE_DarkForces
 
 				if (!s_levelComplete)
 				{
+					#if defined(N64)
+					if (s_runGameState.state != GSTATE_AGENT_MENU)
+					{
+						s_runGameState.abortLevel = JTRUE;
+						s_runGameState.cutsceneIndex--;
+					}
+					#else
 					s_runGameState.abortLevel = JTRUE;
 					s_runGameState.cutsceneIndex--;
+					#endif
 				}
 				else
 				{
@@ -707,7 +763,10 @@ namespace TFE_DarkForces
 					handleLevelComplete();
 				}
 
-				startNextMode();
+				if (s_runGameState.state != GSTATE_AGENT_MENU)
+				{
+					startNextMode();
+				}
 
 				region_clear(s_levelRegion);
 				bitmap_clearLevelData();
@@ -809,6 +868,12 @@ namespace TFE_DarkForces
 		}  break;
 		case GMODE_MISSION:
 		{
+			#if defined(N64)
+			debugf("[df_runtime_real] startNextMode -> GMODE_MISSION levelIndex=%ld code=%s\n",
+				(long)agent_getLevelIndex(),
+				agent_getLevelName() ? agent_getLevelName() : "<null>");
+			#endif
+
 			sound_levelStart();
 
 			bitmap_setAllocator(s_levelRegion);
@@ -833,6 +898,11 @@ namespace TFE_DarkForces
 
 			s_sharedState.loadMissionTask = createTask("start mission", mission_startTaskFunc, JTRUE);
 			mission_setLoadMissionTask(s_sharedState.loadMissionTask);
+			#if defined(N64)
+			debugf("[df_runtime_real] mission load task queued loadTask=%p taskCount=%ld\n",
+				(void*)s_sharedState.loadMissionTask,
+				(long)task_getCount());
+			#endif
 
 			s32 levelIndex = agent_getLevelIndex();
 			gameMusic_start(levelIndex);
@@ -844,6 +914,9 @@ namespace TFE_DarkForces
 			// so launchCurrentTask() is not required here.
 			// In the original, the task system would simply loop here.
 			s_runGameState.state = GSTATE_MISSION;
+			#if defined(N64)
+			debugf("[df_runtime_real] game state set to GSTATE_MISSION\n");
+			#endif
 		}
 		}
 	}
@@ -1511,6 +1584,11 @@ namespace TFE_DarkForces
 
 	void startMissionFromSave(s32 levelIndex)
 	{
+		#if defined(N64)
+		debugf("[df_runtime_real] startMissionFromSave(levelIndex=%ld)\n", (long)levelIndex);
+		debugf("[df_runtime_real] runtime mission bootstrap uses fresh-load path\n");
+		#endif
+
 		// We have returned from the mission tasks.
 		renderer_reset();
 		gameMusic_stop();
@@ -1531,13 +1609,71 @@ namespace TFE_DarkForces
 
 		task_reset();
 		inf_clearState();
-		mission_setLoadingFromSave();	// This tells the mission system that this is loading from a save.
+		#if !defined(N64)
+		mission_setLoadingFromSave();	// Desktop save-load path.
+		#endif
 		s_sharedState.loadMissionTask = createTask("start mission", mission_startTaskFunc, JTRUE);
 		mission_setLoadMissionTask(s_sharedState.loadMissionTask);
 		gameMusic_start(levelIndex);
 
 		s_runGameState.state = GSTATE_MISSION;
+		#if !defined(N64)
 		mission_setupTasks();
+		#endif
+	}
+
+	void startAgentMenuNoCutscenes()
+	{
+		#if defined(N64)
+		debugf("[df_runtime_real] startAgentMenuNoCutscenes()\n");
+		#endif
+
+		enableCutscenes(JFALSE);
+		s_runGameState.startLevel = 0;
+		s_runGameState.levelIndex = 0;
+		s_runGameState.abortLevel = JFALSE;
+		s_runGameState.cutsceneIndex = 0;
+		s_runGameState.state = GSTATE_AGENT_MENU;
+	}
+
+	bool beginFrontendRuntimeNoVideos()
+	{
+		#if defined(N64)
+		debugf("[df_runtime_real] beginFrontendRuntimeNoVideos()\n");
+		#endif
+
+		startAgentMenuNoCutscenes();
+		return true;
+	}
+
+	void tickFrontendRuntimeFrame()
+	{
+		#if defined(N64)
+		static bool s_loggedRuntimeTick = false;
+		static bool s_loggedTaskRun = false;
+		if (!s_loggedRuntimeTick)
+		{
+			s_loggedRuntimeTick = true;
+			debugf("[df_runtime_real] tickFrontendRuntimeFrame active\n");
+		}
+		#endif
+
+		// Runtime lane uses a minimal link set. Avoid constructing a full IGame object
+		// here because that retains vtable paths (save/serialize) not yet linked.
+		alignas(DarkForces) static u8 s_runtimeFrontendGameStorage[sizeof(DarkForces)] = { 0 };
+		DarkForces* runtimeGame = reinterpret_cast<DarkForces*>(s_runtimeFrontendGameStorage);
+		runtimeGame->DarkForces::loopGame();
+
+		// Match the desktop game loop contract: Dark Forces state updates in loopGame,
+		// but mission/task progression occurs in the Task scheduler.
+		const u32 ranTasks = TFE_Jedi::task_run();
+		#if defined(N64)
+		if (!s_loggedTaskRun && ranTasks)
+		{
+			s_loggedTaskRun = true;
+			debugf("[df_runtime_real] task scheduler active\n");
+		}
+		#endif
 	}
 
 	void serializeLoopState(Stream* stream, DarkForces* game)

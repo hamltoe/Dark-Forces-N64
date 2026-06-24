@@ -88,3 +88,16 @@ TheForceEngine/tfelnx
 # ignore recipe
 *.recipe
 .DS_Store
+
+# N64 build artifacts (libdragon build lane)
+/build/
+*.z64
+*.v64
+*.dfs
+*.sym
+*.stripped
+
+# N64 DragonFS staging: ignore user-supplied (copyrighted) game data,
+# but keep the staging README placeholder.
+/filesystem/*
+*.GOB

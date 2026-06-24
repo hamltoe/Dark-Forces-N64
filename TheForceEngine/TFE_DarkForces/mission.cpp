@@ -3,6 +3,9 @@
 #include "animLogic.h"
 #include "automap.h"
 #include "cheats.h"
+#if defined(N64)
+#include <debug.h>
+#endif
 #include "config.h"
 #include "gameMusic.h"
 #include "hud.h"
@@ -38,6 +41,11 @@
 #include <TFE_System/tfeMessage.h>
 #include <TFE_Input/inputMapping.h>
 #include <TFE_Input/replay.h>
+
+#if defined(N64)
+// Implemented in n64/tfe_mission_probe_shims.cpp (probe lane only).
+extern void n64_mission_setupPlayerEye(const char* levelName, u8 difficulty) __attribute__((weak));
+#endif
 
 using namespace TFE_Jedi;
 using namespace TFE_Input;
@@ -273,6 +281,9 @@ namespace TFE_DarkForces
 	void mission_setLoadingFromSave()
 	{
 		s_loadingFromSave = JTRUE;
+		#if defined(N64)
+		debugf("[df_mission_real] mission_setLoadingFromSave()\n");
+		#endif
 	}
 
 	char s_colormapName[TFE_MAX_PATH] = { 0 };
@@ -389,6 +400,10 @@ namespace TFE_DarkForces
 
 	void mission_startTaskFunc(MessageType msg)
 	{
+		#if defined(N64)
+		debugf("[df_mission_real] mission_startTaskFunc(msg=%d, loadingFromSave=%d)\n", (int)msg, (int)s_loadingFromSave);
+		#endif
+
 		task_begin;
 		{
 			// TFE-specific
@@ -408,6 +423,9 @@ namespace TFE_DarkForces
 				s_levelComplete = JFALSE;
 			}
 			s_mainTask = createTask("main task", mission_mainTaskFunc);
+			#if defined(N64)
+			debugf("[df_mission_real] mission_startTaskFunc mainTask=%p\n", (void*)s_mainTask);
+			#endif
 
 			s_invalidLevelIndex = JFALSE;
 			s_exitLevel = JFALSE;
@@ -423,9 +441,22 @@ namespace TFE_DarkForces
 				s_loadingScreenStart = s_curTick;
 				{
 					const char* levelName = agent_getLevelName();
+					#if defined(N64)
+					debugf("[df_mission_real] level_load begin: level=%s difficulty=%d\n",
+						levelName ? levelName : "<null>",
+						(int)s_agentData[s_agentId].difficulty);
+					#endif
 					// For now always load medium difficulty since it cannot be selected.
 					if (level_load(levelName, s_agentData[s_agentId].difficulty))
 					{
+						#if defined(N64)
+						debugf("[df_mission_real] level_load success: level=%s\n", levelName ? levelName : "<null>");
+						if (!s_playerEye && n64_mission_setupPlayerEye)
+						{
+							n64_mission_setupPlayerEye(levelName, s_agentData[s_agentId].difficulty);
+							debugf("[df_mission_real] bootstrap playerEye after level_load: %s\n", s_playerEye ? "ready" : "missing");
+						}
+						#endif
 						setScreenBrightness(ONE_16);
 						setScreenFxLevels(0, 0, 0);
 						setLuminanceMask(0, 0, 0);
@@ -444,6 +475,12 @@ namespace TFE_DarkForces
 
 						reticle_enable(true);
 					}
+					#if defined(N64)
+					else
+					{
+						debugf("[df_mission_real] level_load FAILED: level=%s\n", levelName ? levelName : "<null>");
+					}
+					#endif
 					s_flatLighting = JFALSE;
 					// Note: I am not sure why this is there but it overrides all player settings
 					// By default the player load disables night vision so it won't carry over from previous maps.
@@ -458,6 +495,12 @@ namespace TFE_DarkForces
 				reticle_enable(true);
 			}
 			s_loadingFromSave = JFALSE;
+
+			#if defined(N64)
+			debugf("[df_mission_real] mission_startTaskFunc complete: taskCount=%ld missionMode=%d\n",
+				(long)task_getCount(),
+				(int)s_missionMode);
+			#endif
 			TFE_Input::clearAccumulatedMouseMove();
 
 			s_gamePaused = JFALSE;
@@ -532,6 +575,11 @@ namespace TFE_DarkForces
 
 	void mission_render(s32 rendererIndex, bool forceTextureUpdate)
 	{
+		#if defined(N64)
+		static u32 s_missionRenderPresentCount = 0;
+		static u32 s_missionRenderDrawCount = 0;
+		#endif
+
 		if (task_getCount() > 1 && s_missionMode == MISSION_MODE_MAIN)
 		{
 			TFE_Jedi::renderer_setType(rendererIndex == 0 ? RENDERER_SOFTWARE : RENDERER_HARDWARE);
@@ -542,7 +590,34 @@ namespace TFE_DarkForces
 			TFE_Jedi::beginRender();
 
 			updateScreensize();
-			drawWorld(s_framebuffer, s_playerEye->sector, s_levelColorMap, s_lightSourceRamp);
+			RSector* renderSector = s_playerEye ? s_playerEye->sector : nullptr;
+			#if defined(N64)
+			if (!renderSector)
+			{
+				static JBool s_loggedMissionRenderMissingEye = JFALSE;
+				if (!s_loggedMissionRenderMissingEye)
+				{
+					s_loggedMissionRenderMissingEye = JTRUE;
+					debugf("[df_mission_real] mission_render missing playerEye; using probe sector fallback\n");
+				}
+			}
+			#endif
+			#if defined(N64)
+			if (s_missionRenderDrawCount == 0)
+			{
+				debugf("[df_mission_real] mission_render first drawWorld tick=%ld renderer=%ld\n",
+					(long)s_curTick,
+					(long)rendererIndex);
+			}
+			else if ((s_missionRenderDrawCount % 120u) == 0)
+			{
+				debugf("[df_mission_real] mission_render drawWorld heartbeat frame=%lu tick=%ld\n",
+					(unsigned long)s_missionRenderDrawCount,
+					(long)s_curTick);
+			}
+			s_missionRenderDrawCount++;
+			#endif
+			drawWorld(s_framebuffer, renderSector, s_levelColorMap, s_lightSourceRamp);
 			weapon_draw(s_framebuffer, (DrawRect*)vfb_getScreenRect(VFB_RECT_UI));
 			handleVisionFx();
 			handlePaletteFx();
@@ -551,12 +626,38 @@ namespace TFE_DarkForces
 			automap_resetScale();
 
 			TFE_Jedi::endRender();
+			#if defined(N64)
+			if (s_missionRenderPresentCount == 0)
+			{
+				debugf("[df_mission_real] mission_render first vfb_swap tick=%ld\n", (long)s_curTick);
+			}
+			else if ((s_missionRenderPresentCount % 120u) == 0)
+			{
+				debugf("[df_mission_real] mission_render vfb_swap heartbeat frame=%lu tick=%ld\n",
+					(unsigned long)s_missionRenderPresentCount,
+					(long)s_curTick);
+			}
+			#endif
 			vfb_swap();
+			#if defined(N64)
+			s_missionRenderPresentCount++;
+			#endif
 		}
 	}
 				
 	void mission_mainTaskFunc(MessageType msg)
 	{
+		#if defined(N64)
+		static JBool s_loggedMissionMainTask = JFALSE;
+		static u32 s_missionMainDrawCount = 0;
+		static u32 s_missionMainPresentCount = 0;
+		if (!s_loggedMissionMainTask)
+		{
+			s_loggedMissionMainTask = JTRUE;
+			debugf("[df_mission_real] mission_mainTaskFunc active\n");
+		}
+		#endif
+
 		task_begin;
 		blankScreen();
 
@@ -605,8 +706,47 @@ namespace TFE_DarkForces
 					updateScreensize();
 					if (s_playerEye)
 					{
+						#if defined(N64)
+						if (s_missionMainDrawCount == 0)
+						{
+							debugf("[df_mission_real] mission_mainTask first drawWorld tick=%ld\n", (long)s_curTick);
+						}
+						else if ((s_missionMainDrawCount % 120u) == 0)
+						{
+							debugf("[df_mission_real] mission_mainTask drawWorld heartbeat frame=%lu tick=%ld paused=%d\n",
+								(unsigned long)s_missionMainDrawCount,
+								(long)s_curTick,
+								(int)s_gamePaused);
+						}
+						s_missionMainDrawCount++;
+						#endif
 						drawWorld(s_framebuffer, s_playerEye->sector, s_levelColorMap, s_lightSourceRamp);
 					}
+					#if defined(N64)
+					else
+					{
+						static JBool s_loggedMissionMainMissingEye = JFALSE;
+						if (!s_loggedMissionMainMissingEye)
+						{
+							s_loggedMissionMainMissingEye = JTRUE;
+							debugf("[df_mission_real] mission_mainTask missing playerEye; forcing probe draw fallback\n");
+						}
+
+						if (s_missionMainDrawCount == 0)
+						{
+							debugf("[df_mission_real] mission_mainTask first drawWorld tick=%ld (fallback)\n", (long)s_curTick);
+						}
+						else if ((s_missionMainDrawCount % 120u) == 0)
+						{
+							debugf("[df_mission_real] mission_mainTask drawWorld heartbeat frame=%lu tick=%ld paused=%d (fallback)\n",
+								(unsigned long)s_missionMainDrawCount,
+								(long)s_curTick,
+								(int)s_gamePaused);
+						}
+						s_missionMainDrawCount++;
+						drawWorld(s_framebuffer, nullptr, s_levelColorMap, s_lightSourceRamp);
+					}
+					#endif
 					weapon_draw(s_framebuffer, (DrawRect*)vfb_getScreenRect(VFB_RECT_UI));
 					handleVisionFx();
 				}
@@ -689,7 +829,26 @@ namespace TFE_DarkForces
 
 			// vgaSwapBuffers() in the DOS code.
 			TFE_Jedi::endRender();
+			#if defined(N64)
+			if (s_missionMainPresentCount == 0)
+			{
+				debugf("[df_mission_real] mission_mainTask first vfb_swap tick=%ld mode=%d\n",
+					(long)s_curTick,
+					(int)s_missionMode);
+			}
+			else if ((s_missionMainPresentCount % 120u) == 0)
+			{
+				debugf("[df_mission_real] mission_mainTask vfb_swap heartbeat frame=%lu tick=%ld mode=%d paused=%d\n",
+					(unsigned long)s_missionMainPresentCount,
+					(long)s_curTick,
+					(int)s_missionMode,
+					(int)s_gamePaused);
+			}
+			#endif
 			vfb_swap();
+			#if defined(N64)
+			s_missionMainPresentCount++;
+			#endif
 
 			// Pump tasks and look for any with a different ID.
 			do
@@ -776,6 +935,12 @@ namespace TFE_DarkForces
 
 	void mission_setupTasks()
 	{
+		#if defined(N64)
+		debugf("[df_mission_real] mission_setupTasks(level=%s, fromSave=%d)\n",
+			agent_getLevelName() ? agent_getLevelName() : "<null>",
+			(int)s_loadingFromSave);
+		#endif
+
 		setSpriteAnimation(nullptr, nullptr);
 		bitmap_setupAnimationTask();
 		hud_startup(JFALSE);

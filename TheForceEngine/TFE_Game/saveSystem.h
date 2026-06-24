@@ -3,7 +3,6 @@
 // Shared save/load functionality used  by all games.
 //////////////////////////////////////////////////////////////////////
 #include "igame.h"
-#include <TFE_Asset/imageAsset.h>
 
 namespace TFE_SaveSystem
 {

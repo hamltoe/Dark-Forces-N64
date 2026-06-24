@@ -1,6 +1,5 @@
 // main.cpp : Defines the entry point for the application.
 #include "version.h"
-#include <SDL.h>
 #include <TFE_System/types.h>
 #include <TFE_System/profiler.h>
 #include <TFE_Memory/memoryRegion.h>
@@ -17,6 +16,7 @@
 #include <TFE_Input/inputMapping.h>
 #include <TFE_Settings/settings.h>
 #include <TFE_System/system.h>
+#include <TFE_System/platformMain.h>
 #include <TFE_System/CrashHandler/crashHandler.h>
 #include <TFE_System/frameLimiter.h>
 #include <TFE_System/tfeMessage.h>
@@ -84,135 +84,19 @@ static const char* s_loadRequestFilename = nullptr;
 void parseOption(const char* name, const std::vector<const char*>& values, bool longName);
 bool validatePath();
 
-void handleEvent(SDL_Event& Event)
+void handleEvent(const void* eventData, void* userData)
 {
-	TFE_Ui::setUiInput(&Event);
-	TFE_Settings_Window* windowSettings = TFE_Settings::getWindowSettings();
-
-	switch (Event.type)
+	(void)userData;
+	if (TFE_Platform::dispatchPlatformEvent(eventData))
 	{
-		case SDL_QUIT:
-		{
-			TFE_System::logWrite(LOG_MSG, "Main", "App Quit");
-			s_loop = false;
-		} break;
-		case SDL_WINDOWEVENT:
-		{
-			if (Event.window.event == SDL_WINDOWEVENT_RESIZED || Event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED)
-			{
-				TFE_RenderBackend::resize(Event.window.data1, Event.window.data2);
-			}
-		} break;
-		case SDL_CONTROLLERDEVICEADDED:
-		{
-			const s32 cIdx = Event.cdevice.which;
-			if (SDL_IsGameController(cIdx))
-			{
-				SDL_GameController* controller = SDL_GameControllerOpen(cIdx);
-				SDL_Joystick* j = SDL_GameControllerGetJoystick(controller);
-				SDL_JoystickID joyId = SDL_JoystickInstanceID(j);
-
-				//Save the joystick id to used in the future events
-				SDL_GameControllerOpen(0);
-			}
-		} break;
-		case SDL_MOUSEBUTTONDOWN:
-		{
-			TFE_Input::setMouseButtonDown(MouseButton(Event.button.button - SDL_BUTTON_LEFT));
-		} break;
-		case SDL_MOUSEBUTTONUP:
-		{
-			TFE_Input::setMouseButtonUp(MouseButton(Event.button.button - SDL_BUTTON_LEFT));
-		} break;
-		case SDL_MOUSEWHEEL:
-		{
-			TFE_Input::setMouseWheel(Event.wheel.x, Event.wheel.y);
-		} break;
-		case SDL_KEYDOWN:
-		{
-			if (Event.key.keysym.scancode)
-			{
-				TFE_Input::setKeyDown(KeyboardCode(Event.key.keysym.scancode), Event.key.repeat != 0);
-			}
-
-			if (Event.key.keysym.scancode)
-			{
-				TFE_Input::setBufferedKey(KeyboardCode(Event.key.keysym.scancode));
-			}
-		} break;
-		case SDL_KEYUP:
-		{
-			if (Event.key.keysym.scancode)
-			{
-				const KeyboardCode code = KeyboardCode(Event.key.keysym.scancode);
-				TFE_Input::setKeyUp(KeyboardCode(Event.key.keysym.scancode));
-
-				// Fullscreen toggle.
-				bool altHeld = TFE_Input::keyDown(KEY_LALT) || TFE_Input::keyDown(KEY_RALT);
-				if (code == KeyboardCode::KEY_F11 || (code == KeyboardCode::KEY_RETURN && altHeld))
-				{
-					windowSettings->fullscreen = !windowSettings->fullscreen;
-					TFE_RenderBackend::enableFullscreen(windowSettings->fullscreen);
-				}				
-			}
-		} break;
-		case SDL_TEXTINPUT:
-		{
-			TFE_Input::setBufferedInput(Event.text.text);
-		} break;
-		case SDL_CONTROLLERAXISMOTION:
-		{
-			// Axis are now handled interally so the deadzone can be changed.
-			if (Event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX)
-			{ TFE_Input::setAxis(AXIS_LEFT_X, f32(Event.caxis.value) / 32768.0f); }
-			else if (Event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY)
-			{ TFE_Input::setAxis(AXIS_LEFT_Y, -f32(Event.caxis.value) / 32768.0f); }
-
-			if (Event.caxis.axis == SDL_CONTROLLER_AXIS_RIGHTX)
-			{ TFE_Input::setAxis(AXIS_RIGHT_X, f32(Event.caxis.value) / 32768.0f); }
-			else if (Event.caxis.axis == SDL_CONTROLLER_AXIS_RIGHTY)
-			{ TFE_Input::setAxis(AXIS_RIGHT_Y, -f32(Event.caxis.value) / 32768.0f); }
-
-			const s32 deadzone = 3200;
-			if ((Event.caxis.value < -deadzone) || (Event.caxis.value > deadzone))
-			{
-				if (Event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT)
-				{ TFE_Input::setAxis(AXIS_LEFT_TRIGGER, f32(Event.caxis.value) / 32768.0f); }
-				if (Event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT)
-				{ TFE_Input::setAxis(AXIS_RIGHT_TRIGGER, f32(Event.caxis.value) / 32768.0f); }
-			}
-			else
-			{
-				if (Event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT)
-				{ TFE_Input::setAxis(AXIS_LEFT_TRIGGER, 0.0f); }
-				if (Event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT)
-				{ TFE_Input::setAxis(AXIS_RIGHT_TRIGGER, 0.0f); }
-			}
-		} break;
-		case SDL_CONTROLLERBUTTONDOWN:
-		{
-			if (Event.cbutton.button < CONTROLLER_BUTTON_COUNT)
-			{
-				TFE_Input::setButtonDown(Button(Event.cbutton.button));
-			}
-		} break;
-		case SDL_CONTROLLERBUTTONUP:
-		{
-			if (Event.cbutton.button < CONTROLLER_BUTTON_COUNT)
-			{
-				TFE_Input::setButtonUp(Button(Event.cbutton.button));
-			}
-		} break;
-		default:
-		{
-		} break;
+		TFE_System::logWrite(LOG_MSG, "Main", "App Quit");
+		s_loop = false;
 	}
 }
 
 bool sdlInit()
 {
-	const int code = SDL_Init(SDL_INIT_TIMER | SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER | SDL_INIT_AUDIO);
-	if (code != 0) { return false; }
+	if (!TFE_Platform::initDesktopRuntime()) { return false; }
 
 	TFE_Settings_Window* windowSettings = TFE_Settings::getWindowSettings();
 	bool fullscreen    = windowSettings->fullscreen || TFE_Settings::getTempSettings()->forceFullscreen;
@@ -245,27 +129,30 @@ bool sdlInit()
 	}
 
 	// Determine the display mode settings based on the desktop.
-	SDL_DisplayMode mode = {};
-	SDL_GetDesktopDisplayMode(s_displayIndex, &mode);
-	s_refreshRate = (f32)mode.refresh_rate;
+	s32 desktopW = (s32)s_displayWidth;
+	s32 desktopH = (s32)s_displayHeight;
+	f32 desktopRefreshRate = 60.0f;
+	if (!TFE_Platform::queryDesktopDisplayMode(s_displayIndex, &desktopW, &desktopH, &desktopRefreshRate))
+	{
+		TFE_System::logWrite(LOG_WARNING, "Display", "Unable to query desktop display mode for display %d.", s_displayIndex);
+	}
+	s_refreshRate = desktopRefreshRate;
 
 	if (fullscreen)
 	{
-		s_displayWidth  = mode.w;
-		s_displayHeight = mode.h;
+		s_displayWidth  = (u32)desktopW;
+		s_displayHeight = (u32)desktopH;
 	}
 	else
 	{
-		s_displayWidth  = std::min(s_displayWidth,  (u32)mode.w);
-		s_displayHeight = std::min(s_displayHeight, (u32)mode.h);
+		s_displayWidth  = std::min(s_displayWidth,  (u32)desktopW);
+		s_displayHeight = std::min(s_displayHeight, (u32)desktopH);
 	}
 
-	s_monitorWidth  = mode.w;
-	s_monitorHeight = mode.h;
+	s_monitorWidth  = (u32)desktopW;
+	s_monitorHeight = (u32)desktopH;
 
-#ifdef SDL_HINT_APP_NAME  // SDL 2.0.18+
-	SDL_SetHint(SDL_HINT_APP_NAME, "The Force Engine");
-#endif
+	TFE_Platform::setApplicationName("The Force Engine");
 
 	return true;
 }
@@ -675,8 +562,7 @@ int main(int argc, char* argv[])
 		if (enableRelative != relativeMode)
 		{
 			static bool showRelativeErrorOnce = true;
-			const s32 result = SDL_SetRelativeMouseMode(enableRelative ? SDL_TRUE : SDL_FALSE);
-			if (result >= 0)
+			if (TFE_Platform::setRelativeMouseMode(enableRelative))
 			{
 				relativeMode = enableRelative;
 			}
@@ -688,8 +574,7 @@ int main(int argc, char* argv[])
 		}
 
 		// System events
-		SDL_Event event;
-		while (SDL_PollEvent(&event)) { handleEvent(event); }
+		TFE_Platform::pumpEvents(handleEvent, nullptr);
 
 		// Inputs Main Entry - skip frame any further processing during replay pause
 		if (!inputMapping_handleInputs())
@@ -961,8 +846,7 @@ int main(int argc, char* argv[])
 			TFE_FRAME_BEGIN();
 
 			// System events
-			SDL_Event event;
-			while (SDL_PollEvent(&event)) { handleEvent(event); }
+			TFE_Platform::pumpEvents(handleEvent, nullptr);
 
 			TFE_Ui::begin();
 			TFE_System::update();
@@ -1007,7 +891,7 @@ int main(int argc, char* argv[])
 	TFE_RenderBackend::destroy();
 	TFE_SaveSystem::destroy();
 	TFE_ForceScript::destroy();
-	SDL_Quit();
+	TFE_Platform::shutdownDesktopRuntime();
 		
 	TFE_System::logWrite(LOG_MSG, "Progam Flow", "The Force Engine Game Loop Ended.");
 	TFE_System::logClose();

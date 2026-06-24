@@ -9,6 +9,7 @@
 #include "RClassic_Fixed/rclassicFixed.h"
 #include "RClassic_Fixed/rsectorFixed.h"
 
+#if !defined(N64)
 #include "RClassic_Float/rclassicFloat.h"
 #include "RClassic_Float/rsectorFloat.h"
 #include "RClassic_Float/rclassicFloatSharedState.h"
@@ -16,12 +17,17 @@
 #include "RClassic_GPU/rclassicGPU.h"
 #include "RClassic_GPU/rsectorGPU.h"
 #include "RClassic_GPU/screenDrawGPU.h"
+#endif
 
 #include <TFE_System/profiler.h>
+#if !defined(N64)
 #include <TFE_RenderBackend/renderBackend.h>
+#endif
 #include <TFE_Settings/settings.h>
+#if !defined(N64)
 #include <TFE_Asset/spriteAsset_Jedi.h>
 #include <TFE_Asset/modelAsset_jedi.h>
+#endif
 #include <TFE_FrontEndUI/console.h>
 
 namespace TFE_Jedi
@@ -43,8 +49,10 @@ namespace TFE_Jedi
 	// Forward Declarations
 	/////////////////////////////////////////////
 	void clear1dDepth();
+#if !defined(N64)
 	void console_setSubRenderer(const std::vector<std::string>& args);
 	void console_getSubRenderer(const std::vector<std::string>& args);
+#endif
 
 	/////////////////////////////////////////////
 	// Implementation
@@ -52,10 +60,14 @@ namespace TFE_Jedi
 	void renderer_resetState()
 	{
 		RClassic_Fixed::resetState();
+#if !defined(N64)
 		RClassic_Float::resetState();
 		RClassic_GPU::resetState();
+#endif
 		s_hudTextureCallbacks.clear();
+#if !defined(N64)
 		screen_clear();
+#endif
 
 		for (s32 i = 0; i < TSR_COUNT; i++)
 		{
@@ -72,7 +84,9 @@ namespace TFE_Jedi
 		s_init = false;
 		s_trueColor = false;
 		s_enableMips = false;
+#if !defined(N64)
 		vfb_setMode();
+#endif
 	}
 
 	TFE_Sectors* renderer_getSectorRenderer(TFE_SubRenderer renderer)
@@ -86,6 +100,7 @@ namespace TFE_Jedi
 				}
 				return s_sectorRendererCache[renderer];
 				break;
+#if !defined(N64)
 			case TSR_CLASSIC_FLOAT:
 				if (!s_sectorRendererCache[renderer])
 				{
@@ -100,6 +115,7 @@ namespace TFE_Jedi
 				}
 				return s_sectorRendererCache[renderer];
 				break;
+#endif
 		}
 		TFE_System::logWrite(LOG_ERROR, "Jedi Renderer", "Invalid Sector Renderer.");
 		return nullptr;
@@ -112,6 +128,7 @@ namespace TFE_Jedi
 		// Setup Debug CVars.
 		s_maxWallCount = 0xffff;
 		s_maxDepthCount = 0xffff;
+#if !defined(N64)
 		CVAR_INT(s_maxWallCount,  "d_maxWallCount",  CVFLAG_DO_NOT_SERIALIZE, "Maximum wall count for a given sector.");
 		CVAR_INT(s_maxDepthCount, "d_maxDepthCount", CVFLAG_DO_NOT_SERIALIZE, "Maximum adjoin depth count.");
 		CVAR_INT(s_sectorAmbient, "d_sectorAmbient", CVFLAG_DO_NOT_SERIALIZE, "Current Sector Ambient.");
@@ -128,6 +145,7 @@ namespace TFE_Jedi
 		TFE_COUNTER(s_flatCount,      "Flat Count");
 		TFE_COUNTER(s_curWallSeg,     "Wall Segment Count");
 		TFE_COUNTER(s_adjoinSegCount, "Adjoin Segment Count");
+#endif
 
 		s_sectorRenderer = renderer_getSectorRenderer(TSR_CLASSIC_FIXED);
 		renderer_setLimits();
@@ -136,7 +154,9 @@ namespace TFE_Jedi
 	void renderer_destroy()
 	{
 		renderer_resetState();
+#if !defined(N64)
 		screenGPU_destroy();
+#endif
 	}
 
 	void renderer_reset()
@@ -153,6 +173,11 @@ namespace TFE_Jedi
 
 	void renderer_setLimits()
 	{
+#if defined(N64)
+		s_maxSegCount = MAX_SEG;
+		s_maxAdjoinSegCount = MAX_ADJOIN_SEG;
+		s_maxAdjoinDepthRecursion = MAX_ADJOIN_DEPTH;
+#else
 		if (TFE_Settings::extendAdjoinLimits())
 		{
 			s_maxSegCount = MAX_SEG_EXT;
@@ -165,6 +190,7 @@ namespace TFE_Jedi
 			s_maxAdjoinSegCount = MAX_ADJOIN_SEG;
 			s_maxAdjoinDepthRecursion = MAX_ADJOIN_DEPTH;
 		}
+#endif
 	}
 
 	void renderer_setType(RendererType type)
@@ -180,6 +206,9 @@ namespace TFE_Jedi
 
 	void setupInitCameraAndLights()
 	{
+#if defined(N64)
+		RClassic_Fixed::setupInitCameraAndLights();
+#else
 		u32 dispWidth, dispHeight;
 		vfb_getResolution(&dispWidth, &dispHeight);
 		dispWidth  = max((s32)dispWidth,  320);
@@ -188,6 +217,7 @@ namespace TFE_Jedi
 		RClassic_Fixed::setupInitCameraAndLights();
 		RClassic_Float::setupInitCameraAndLights(dispWidth, dispHeight);
 		RClassic_GPU::setupInitCameraAndLights(dispWidth, dispHeight);
+#endif
 	}
 
 	void blitTextureToScreen(TextureData* texture, s32 x0, s32 y0)
@@ -207,6 +237,7 @@ namespace TFE_Jedi
 
 	void console_setSubRenderer(const std::vector<std::string>& args)
 	{
+#if !defined(N64)
 		if (args.size() < 2) { return; }
 		const char* value = args[1].c_str();
 
@@ -222,10 +253,14 @@ namespace TFE_Jedi
 		{
 			setSubRenderer(TSR_CLASSIC_GPU);
 		}
+#else
+		(void)args;
+#endif
 	}
 
 	void console_getSubRenderer(const std::vector<std::string>& args)
 	{
+#if !defined(N64)
 		const char* c_subRenderers[] =
 		{
 			"Classic_Fixed",	// TSR_CLASSIC_FIXED
@@ -233,6 +268,9 @@ namespace TFE_Jedi
 			"Classic_GPU",		// TSR_CLASSIC_GPU
 		};
 		TFE_Console::addToHistory(c_subRenderers[s_subRenderer]);
+#else
+		(void)args;
+#endif
 	}
 
 	static s32 s_fov = -1;
@@ -245,6 +283,18 @@ namespace TFE_Jedi
 				
 	JBool render_setResolution(bool forceTextureUpdate)
 	{
+#if defined(N64)
+		// N64: fixed 320x200 software renderer only. No backend / GPU / float paths.
+		(void)forceTextureUpdate;
+		s_subRenderer = TSR_CLASSIC_FIXED;
+		vfb_setResolution(320, 200);
+		if (!s_sectorRenderer)
+		{
+			s_sectorRenderer = renderer_getSectorRenderer(TSR_CLASSIC_FIXED);
+		}
+		RClassic_Fixed::changeResolution(320, 200);
+		return JTRUE;
+#else
 		TFE_Settings_Graphics* graphics = TFE_Settings::getGraphicsSettings();
 		DisplayInfo info;
 		TFE_RenderBackend::getDisplayInfo(&info);
@@ -346,6 +396,7 @@ namespace TFE_Jedi
 			RClassic_GPU::changeResolution(width, height);
 		}
 		return JTRUE;
+#endif
 	}
 
 	void renderer_setVisionEffect(s32 effect)
@@ -377,6 +428,12 @@ namespace TFE_Jedi
 		}
 		s_sectorRenderer = nullptr;
 
+#if defined(N64)
+		// N64: only the fixed-point software sub-renderer exists.
+		vfb_setResolution(320, 200);
+		s_sectorRenderer = renderer_getSectorRenderer(TSR_CLASSIC_FIXED);
+		RClassic_Fixed::setupInitCameraAndLights();
+#else
 		vfb_setMode(subRenderer == TSR_CLASSIC_GPU ? VFB_RENDER_TRAGET : VFB_TEXTURE);
 		switch (subRenderer)
 		{
@@ -409,6 +466,7 @@ namespace TFE_Jedi
 				RClassic_GPU::setupInitCameraAndLights(width, height);
 			} break;
 		}
+#endif
 		return JTRUE;
 	}
 
@@ -465,8 +523,10 @@ namespace TFE_Jedi
 		// For now compute both fixed-point and floating-point camera transforms so that it is easier to swap between sub-renderers.
 		// TODO: Find a cleaner alternative.
 		RClassic_Fixed::computeCameraTransform(sector, clampedPitch, yaw, camX, camY, camZ);
+#if !defined(N64)
 		RClassic_Float::computeCameraTransform(sector, f32(clampedPitch), f32(yaw), fixed16ToFloat(camX), fixed16ToFloat(camY), fixed16ToFloat(camZ));
 		RClassic_GPU::computeCameraTransform(sector, f32(pitch), f32(yaw), fixed16ToFloat(camX), fixed16ToFloat(camY), fixed16ToFloat(camZ));
+#endif
 	}
 		
 	void beginRender()
@@ -477,6 +537,7 @@ namespace TFE_Jedi
 			s_subRenderer = TSR_INVALID;
 			setSubRenderer(subRenderer);
 		}
+#if !defined(N64)
 		if (s_subRenderer == TSR_CLASSIC_GPU)
 		{
 			vfb_bindRenderTarget(/*clearColor*/s_showWireframe);
@@ -485,16 +546,19 @@ namespace TFE_Jedi
 			vfb_getResolution(&width, &height);
 			screenDraw_beginQuads(width, height);
 		}
+#endif
 	}
 
 	void endRender()
 	{
+#if !defined(N64)
 		if (s_subRenderer == TSR_CLASSIC_GPU)
 		{
 			screenDraw_endQuads();
 			screenDraw_endLines();
 			vfb_unbindRenderTarget();
 		}
+#endif
 	}
 
 	void drawWorld(u8* display, RSector* sector, const u8* colormap, const u8* lightSourceRamp)
@@ -511,6 +575,7 @@ namespace TFE_Jedi
 		{
 			RClassic_Fixed::computeSkyOffsets();
 		}
+#if !defined(N64)
 		else if (s_subRenderer == TSR_CLASSIC_FLOAT)
 		{
 			RClassic_Float::computeSkyOffsets();
@@ -519,6 +584,7 @@ namespace TFE_Jedi
 		{
 			RClassic_GPU::computeSkyOffsets();
 		}
+#endif
 
 		s_display = display;
 		s_colorMap = colormap;
@@ -561,7 +627,9 @@ namespace TFE_Jedi
 				
 		// Recursively draws sectors and their contents (sprites, 3D objects).
 		{
+#if !defined(N64)
 			TFE_ZONE("Sector Draw");
+#endif
 			s_sectorRenderer->prepare();
 			s_sectorRenderer->draw(sector);
 		}
@@ -577,10 +645,12 @@ namespace TFE_Jedi
 			memset(s_rcfState.depth1d_all, 0, s_width * sizeof(s32));
 			s_rcfState.windowMinZ = 0;
 		}
+#if !defined(N64)
 		else if (s_subRenderer == TSR_CLASSIC_FLOAT)
 		{
 			memset(s_rcfltState.depth1d_all, 0, s_width * sizeof(f32));
 			s_rcfltState.windowMinZ = 0.0f;
 		}
+#endif
 	}
 }

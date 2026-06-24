@@ -23,12 +23,12 @@ namespace TFE_Jedi
 {
 	namespace
 	{
-		s32 wallSortX(const void* r0, const void* r1)
+		int wallSortX(const void* r0, const void* r1)
 		{
-			return ((const RWallSegmentFixed*)r0)->wallX0 - ((const RWallSegmentFixed*)r1)->wallX0;
+			return (int)(((const RWallSegmentFixed*)r0)->wallX0 - ((const RWallSegmentFixed*)r1)->wallX0);
 		}
 
-		s32 sortObjectsFixed(const void* r0, const void* r1)
+		int sortObjectsFixed(const void* r0, const void* r1)
 		{
 			SecObject* obj0 = *((SecObject**)r0);
 			SecObject* obj1 = *((SecObject**)r1);
@@ -43,7 +43,7 @@ namespace TFE_Jedi
 
 				if (obj0->model->isBridge && obj1->model->isBridge)
 				{
-					return dist1 - dist0;
+					return (int)(dist1 - dist0);
 				}
 				else if (obj0->model->isBridge == 1)
 				{
@@ -54,7 +54,7 @@ namespace TFE_Jedi
 					return 1;
 				}
 
-				return dist1 - dist0;
+				return (int)(dist1 - dist0);
 			}
 			else if (obj0->type == OBJ_TYPE_3D && obj0->model->isBridge)
 			{
@@ -66,7 +66,7 @@ namespace TFE_Jedi
 			}
 
 			// Default case:
-			return obj1->posVS.z - obj0->posVS.z;
+			return (int)(obj1->posVS.z - obj0->posVS.z);
 		}
 				
 		s32 cullObjects(RSector* sector, SecObject** buffer)

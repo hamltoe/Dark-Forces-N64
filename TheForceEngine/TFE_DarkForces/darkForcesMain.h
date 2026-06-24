@@ -30,4 +30,7 @@ namespace TFE_DarkForces
 	void enableCutscenes(JBool enable);
 	bool getCutscenesEnabled();
 	void startMissionFromSave(s32 levelIndex);
+	void startAgentMenuNoCutscenes();
+	bool beginFrontendRuntimeNoVideos();
+	void tickFrontendRuntimeFrame();
 }
