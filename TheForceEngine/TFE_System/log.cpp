@@ -4,7 +4,11 @@
 #include <TFE_System/system.h>
 #include <TFE_FileSystem/filestream.h>
 #include <TFE_FileSystem/paths.h>
+#if !defined(N64)
 #include <TFE_FrontEndUI/frontEndUi.h>
+#else
+#include <libdragon.h>
+#endif
 
 #include <assert.h>
 #include <stdio.h>
@@ -72,6 +76,8 @@ namespace TFE_System
 		//Write to the debugger or terminal output.
 #ifdef _WIN32
 		OutputDebugStringA(s_workStr);
+#elif defined(N64)
+		debugf("%s", s_workStr);
 #else
 		fprintf(stderr, "%s", s_workStr);
 #endif
@@ -79,7 +85,11 @@ namespace TFE_System
 
 	void logWrite(LogWriteType type, const char* tag, const char* str, ...)
 	{
+#if defined(N64)
+		if (type >= LOG_COUNT || !tag || !str) { return; }
+#else
 		if (type >= LOG_COUNT || !s_logFile.isOpen() || !tag || !str) { return; }
+#endif
 
 		auto now = std::chrono::system_clock::now();
 		std::time_t now_c = std::chrono::system_clock::to_time_t(now);
@@ -124,15 +134,17 @@ namespace TFE_System
 		}
 
 		//Write to disk
-		s_logFile.writeBuffer(s_workStr, (u32)strlen(s_workStr));
-		//Make sure to flush the file to disk if a crash is likely.
-		//if (type == LOG_ERROR || type == LOG_CRITICAL)
+		if (s_logFile.isOpen())
 		{
+			s_logFile.writeBuffer(s_workStr, (u32)strlen(s_workStr));
+			//Make sure to flush the file to disk if a crash is likely.
 			s_logFile.flush();
 		}
 		//Write to the debugger or terminal output.
 #ifdef _WIN32
 		OutputDebugStringA(s_workStr);
+#elif defined(N64)
+		debugf("%s", s_workStr);
 #else
 		fprintf(stderr, "%s", s_workStr);
 #endif
@@ -142,6 +154,7 @@ namespace TFE_System
 			assert(0);
 		}
 
+#if !defined(N64)
 		sprintf(s_workStr, "%s - [%s] %s", timeStr, tag, s_msgStr);
 		size_t len = strlen(s_msgStr);
 		char* msg = s_msgStr;
@@ -160,6 +173,7 @@ namespace TFE_System
 		{
 			TFE_FrontEndUI::logToConsole(msgStart);
 		}
+#endif
 	}
 
 	void openRotatingLog(const char* fileName, bool append)

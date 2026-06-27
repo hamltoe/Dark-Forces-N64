@@ -74,8 +74,17 @@ namespace TFE_Jedi
 		TASK_CHUNK_SIZE = 256,
 		TASK_PREALLOCATED_CHUNKS = 1,
 
+#ifdef N64
+		// 4 MiB RDRAM: a stack chunk must fit the 256 KiB game-region block
+		// (region_alloc fails any single alloc > blockSize). DF task contexts are
+		// tiny (at most TASK_MAX_LEVELS deep), so 16KB/task is ample; the pool grows
+		// 128KB at a time, on demand.
+		TASK_STACK_SIZE = 16 * 1024,	// 16KB of stack memory per task.
+		TASK_STACK_CHUNK_SIZE = 8,		// 128KB per chunk, grown on demand.
+#else
 		TASK_STACK_SIZE = 32 * 1024,	// 32KB of stack memory.
 		TASK_STACK_CHUNK_SIZE = 64,		// 2MB of memory for 64 tasks with stack memory.
+#endif
 	};
 
 	ChunkedArray* s_tasks = nullptr;

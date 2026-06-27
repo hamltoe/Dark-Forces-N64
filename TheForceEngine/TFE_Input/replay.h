@@ -6,7 +6,14 @@
 #include <unordered_map>
 #include <string>
 #include <TFE_DarkForces/time.h>
+#if defined(N64)
+// saveSystem.h pulls in imageAsset.h (SDL_image), which is not available on N64.
+// Only SaveHeader is referenced below (in two unused replay-directory helpers),
+// so a forward declaration is sufficient for the N64 build.
+namespace TFE_SaveSystem { struct SaveHeader; }
+#else
 #include <TFE_Game/saveSystem.h>
+#endif
 
 namespace TFE_Input
 {

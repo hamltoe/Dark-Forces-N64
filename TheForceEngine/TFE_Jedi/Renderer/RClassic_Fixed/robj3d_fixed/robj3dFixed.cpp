@@ -22,7 +22,7 @@ namespace RClassic_Fixed
 {
 	void robj3d_projectVertices(vec3_fixed* pos, s32 count, vec3_fixed* out);
 	void robj3d_drawVertices(s32 vertexCount, const vec3_fixed* vertices, u8 color);
-	s32 polygonSort(const void* r0, const void* r1);
+		int polygonSort(const void* r0, const void* r1);
 
 	void robj3d_draw(SecObject* obj, JediModel* model)
 	{
@@ -113,7 +113,7 @@ namespace RClassic_Fixed
 		}
 	}
 
-	s32 polygonSort(const void* r0, const void* r1)
+	int polygonSort(const void* r0, const void* r1)
 	{
 		JmPolygon* p0 = *((JmPolygon**)r0);
 		JmPolygon* p1 = *((JmPolygon**)r1);

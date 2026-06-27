@@ -23,15 +23,17 @@ namespace TFE_Jedi
 {
 	namespace
 	{
-		s32 wallSortX(const void* r0, const void* r1)
+		int wallSortX(const void* r0, const void* r1)
 		{
 			return ((const RWallSegmentFixed*)r0)->wallX0 - ((const RWallSegmentFixed*)r1)->wallX0;
 		}
 
-		s32 sortObjectsFixed(const void* r0, const void* r1)
+		int sortObjectsFixed(const void* r0, const void* r1)
 		{
 			SecObject* obj0 = *((SecObject**)r0);
 			SecObject* obj1 = *((SecObject**)r1);
+			const bool obj0Bridge = obj0->type == OBJ_TYPE_3D && obj0->model && obj0->model->isBridge;
+			const bool obj1Bridge = obj1->type == OBJ_TYPE_3D && obj1->model && obj1->model->isBridge;
 
 			if (obj0->type == OBJ_TYPE_3D && obj1->type == OBJ_TYPE_3D)
 			{
@@ -41,26 +43,26 @@ namespace TFE_Jedi
 				const fixed16_16 dist0 = fixedSqrt(distSq0);
 				const fixed16_16 dist1 = fixedSqrt(distSq1);
 
-				if (obj0->model->isBridge && obj1->model->isBridge)
+				if (obj0Bridge && obj1Bridge)
 				{
 					return dist1 - dist0;
 				}
-				else if (obj0->model->isBridge == 1)
+				else if (obj0Bridge)
 				{
 					return -1;
 				}
-				else if (obj1->model->isBridge == 1)
+				else if (obj1Bridge)
 				{
 					return 1;
 				}
 
 				return dist1 - dist0;
 			}
-			else if (obj0->type == OBJ_TYPE_3D && obj0->model->isBridge)
+			else if (obj0Bridge)
 			{
 				return -1;
 			}
-			else if (obj1->type == OBJ_TYPE_3D && obj1->model->isBridge)
+			else if (obj1Bridge)
 			{
 				return 1;
 			}
@@ -97,7 +99,9 @@ namespace TFE_Jedi
 					}
 					else if (type == OBJ_TYPE_3D)
 					{
-						const fixed16_16 radius = curObj->model->radius;
+						JediModel* model = curObj->model;
+						if (!model) { continue; }
+						const fixed16_16 radius = model->radius;
 						const fixed16_16 zMax = curObj->posVS.z + radius;
 						// Near plane
 						if (zMax < ONE_16) { continue; }
@@ -143,6 +147,7 @@ namespace TFE_Jedi
 
 			// Get the animation based on the object state.
 			Wax* wax = obj->wax;
+			if (!wax) { return; }	// N64: sprite asset missing/unloaded — draw nothing rather than deref null.
 			WaxAnim* anim = WAX_AnimPtr(wax, obj->anim & 0x1f);
 			if (anim)
 			{
@@ -507,6 +512,7 @@ namespace TFE_Jedi
 				else if (type == OBJ_TYPE_3D)
 				{
 					TFE_ZONE("Draw 3DO");
+					if (!obj->model) { continue; }
 
 					robj3d_draw(obj, obj->model);
 				}

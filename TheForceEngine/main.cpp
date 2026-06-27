@@ -1,89 +1,484 @@
-// main.cpp : Defines the entry point for the application.
-#include "version.h"
-#include <SDL.h>
+// main.cpp : Nintendo 64 (libdragon) entry point for The Force Engine (Dark Forces).
+//
+// The desktop SDL/OpenGL platform layer has been ported to libdragon. This is a
+// staged, visual-first port: it brings up the libdragon display + RDP command
+// queue + OpenGL context, runs the frame loop, polls the joypad, and presents a
+// 320x200 8-bit (CI8) software framebuffer (+ 256-color palette) to the screen
+// via the N64 render backend. Audio/midi and the full game boot are staged in
+// next (see the TODO block in main()).
+
+#include <libdragon.h>
+#include <GL/gl.h>
+#include <GL/gl_integration.h>
+
 #include <TFE_System/types.h>
-#include <TFE_System/profiler.h>
-#include <TFE_Memory/memoryRegion.h>
-#include <TFE_Archive/gobArchive.h>
-#include <TFE_Game/igame.h>
-#include <TFE_Game/saveSystem.h>
-#include <TFE_Game/reticle.h>
-#include <TFE_Jedi/InfSystem/infSystem.h>
-#include <TFE_FileSystem/fileutil.h>
-#include <TFE_Audio/audioSystem.h>
-#include <TFE_FileSystem/paths.h>
-#include <TFE_Polygon/polygon.h>
 #include <TFE_RenderBackend/renderBackend.h>
-#include <TFE_Input/inputMapping.h>
-#include <TFE_Settings/settings.h>
-#include <TFE_System/system.h>
-#include <TFE_System/CrashHandler/crashHandler.h>
-#include <TFE_System/frameLimiter.h>
-#include <TFE_System/tfeMessage.h>
-#include <TFE_Jedi/Task/task.h>
-#include <TFE_RenderShared/texturePacker.h>
-#include <TFE_Asset/paletteAsset.h>
-#include <TFE_Asset/imageAsset.h>
-#include <TFE_Ui/ui.h>
-#include <TFE_FrontEndUI/frontEndUi.h>
-#include <TFE_FrontEndUI/modLoader.h>
-#include <TFE_A11y/accessibility.h>
-#include <algorithm>
-#include <cinttypes>
-#include <time.h>
-#include <sys/types.h>
-#include <sys/timeb.h>
-#include <TFE_DarkForces/hud.h>
-#include <TFE_DarkForces/mission.h>
-#include <TFE_Input/replay.h>
+#include <TFE_Archive/gobArchive.h>
 
-#if ENABLE_EDITOR == 1
-#include <TFE_Editor/editor.h>
-#endif
-#include <TFE_ForceScript/forceScript.h>
+#include <cstring>
+#include <cstdlib>
 
-#include <TFE_Audio/midiPlayer.h>
+namespace
+{
+	// 320x200 8-bit (CI8) software framebuffer + 256-color palette.
+	// Stage 1 owns these directly to validate the present pipeline; the engine's
+	// virtual framebuffer (vfb_getCpuBuffer / vfb_getPalette) takes over next.
+	u8  s_frameBuffer[320 * 200];
+	u32 s_palette[256];
+	bool s_haveImage = false;
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN 1
-#include <Windows.h>
-#ifdef min
-#undef min
-#undef max
-#pragma comment(lib, "SDL2main.lib")
-#endif
-#endif
+	inline u32 readU16LE(const u8* p) { return (u32)p[0] | ((u32)p[1] << 8); }
+	inline u32 readU32LE(const u8* p) { return (u32)p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) | ((u32)p[3] << 24); }
+	inline s32 readS16LE(const u8* p) { return (s32)(s16)readU16LE(p); }
+	inline s32 readS32LE(const u8* p) { return (s32)readU32LE(p); }
 
-#define PROGRAM_ERROR   1
-#define PROGRAM_SUCCESS 0
+	// Decode a Dark Forces .BM (column-major, palette-indexed CI8; uncompressed,
+	// RLE or RLE0) into the row-major framebuffer, centered. Fields are little-endian.
+	bool decodeBitmapToFramebuffer(const u8* file, size_t fileLen, u8* fb, s32 fbW, s32 fbH)
+	{
+		if (fileLen < 32) { return false; }
+		if (!(file[0] == 'B' && file[1] == 'M' && file[2] == ' ' && file[3] == 0x1e)) { return false; }
 
-#ifndef _DEBUG
-#define INSTALL_CRASH_HANDLER 1
-#else
-#define INSTALL_CRASH_HANDLER 0
-#endif
+		const s32 w = readS16LE(file + 4);
+		const s32 h = readS16LE(file + 6);
+		const s32 compressed = readS16LE(file + 14);
+		const s32 dataSize = readS32LE(file + 16);
+		if (w < 2 || h < 1 || h > 4096) { return false; }  // skip multi-frame (SizeX==1) / bad sizes
 
-using namespace TFE_Input;
-using namespace TFE_A11Y;
+		const u8* src = file + 32;
+		const s32 dw = w < fbW ? w : fbW;
+		const s32 dh = h < fbH ? h : fbH;
+		const s32 xoff = (fbW - dw) / 2;
+		const s32 yoff = (fbH - dh) / 2;
 
-static bool s_loop  = true;
-static bool s_nullAudioDevice = false;
-static f32  s_refreshRate  = 0;
-static s32  s_displayIndex = 0;
-static u32  s_baseWindowWidth  = 1280;
-static u32  s_baseWindowHeight = 720;
-static u32  s_displayWidth  = s_baseWindowWidth;
-static u32  s_displayHeight = s_baseWindowHeight;
-static u32  s_monitorWidth  = 1280;
-static u32  s_monitorHeight = 720;
-static char s_screenshotTime[TFE_MAX_PATH];
-static s32  s_startupGame = -1;
-static IGame* s_curGame = nullptr;
-static const char* s_loadRequestFilename = nullptr;
+		if (compressed == 0)
+		{
+			if (fileLen < 32 + (size_t)w * h) { return false; }
+			for (s32 x = 0; x < dw; x++)
+				for (s32 y = 0; y < dh; y++)
+					fb[(yoff + y) * fbW + (xoff + x)] = src[x * h + y];
+			return true;
+		}
 
-void parseOption(const char* name, const std::vector<const char*>& values, bool longName);
-bool validatePath();
+		// Compressed: per-column offset table (s32 LE) located at src[dataSize].
+		const u8* colTable = src + dataSize;
+		if (colTable + (size_t)w * 4 > file + fileLen) { return false; }
+		const u8* end = file + fileLen;
+		for (s32 x = 0; x < w; x++)
+		{
+			const u8* colData = src + readU32LE(colTable + x * 4);
+			if (colData >= end) { break; }
+			s32 y = 0, i = 0;
+			while (y < h && colData + i < end)
+			{
+				const s32 n = (s32)colData[i]; i++;
+				if (n <= 128)
+				{
+					for (s32 ii = 0; ii < n && y < h && colData + i + ii < end; ii++, y++)
+					{
+						if (x < dw && y < dh) { fb[(yoff + y) * fbW + (xoff + x)] = colData[i + ii]; }
+					}
+					i += n;
+				}
+				else
+				{
+					const u8 v = (compressed == 1) ? colData[i++] : (u8)0;
+					for (s32 ii = 0; ii < n - 128 && y < h; ii++, y++)
+					{
+						if (x < dw && y < dh) { fb[(yoff + y) * fbW + (xoff + x)] = v; }
+					}
+				}
+			}
+		}
+		return true;
+	}
 
+	// Bresenham line into the CI8 framebuffer.
+	void drawLine(u8* fb, s32 fbW, s32 fbH, s32 x0, s32 y0, s32 x1, s32 y1, u8 color)
+	{
+		s32 dx = x1 - x0; if (dx < 0) { dx = -dx; }
+		s32 dy = y1 - y0; if (dy < 0) { dy = -dy; }
+		dy = -dy;
+		const s32 sx = x0 < x1 ? 1 : -1;
+		const s32 sy = y0 < y1 ? 1 : -1;
+		s32 err = dx + dy;
+		for (;;)
+		{
+			if (x0 >= 0 && x0 < fbW && y0 >= 0 && y0 < fbH) { fb[y0 * fbW + x0] = color; }
+			if (x0 == x1 && y0 == y1) { break; }
+			const s32 e2 = 2 * err;
+			if (e2 >= dy) { err += dy; x0 += sx; }
+			if (e2 <= dx) { err += dx; y0 += sy; }
+		}
+	}
+
+	void buildTestPalette()
+	{
+		for (s32 i = 0; i < 256; i++)
+		{
+			const u32 r = (u32)i;
+			const u32 g = (u32)((i * 2) & 0xff);
+			const u32 b = (u32)(255 - i);
+			s_palette[i] = r | (g << 8) | (b << 16) | (0xffu << 24);
+		}
+	}
+
+	void drawTestPattern(u32 frame)
+	{
+		for (s32 y = 0; y < 200; y++)
+		{
+			u8* row = &s_frameBuffer[y * 320];
+			for (s32 x = 0; x < 320; x++)
+			{
+				row[x] = (u8)((x + y + (s32)frame) & 0xff);
+			}
+		}
+	}
+
+	void platformInit()
+	{
+		// Logging first so early failures are visible (USB cart + emulator ISViewer).
+		debug_init_isviewer();
+		debug_init_usblog();
+		debugf("[boot] The Force Engine (N64) starting\n");
+
+		// Game data filesystem (rom:/ via DragonFS).
+		dfs_init(DFS_DEFAULT_LOCATION);
+
+		// Display + RDP command queue + OpenGL context.
+		display_init(RESOLUTION_320x240, DEPTH_16_BPP, 3, GAMMA_NONE, FILTERS_RESAMPLE);
+		rdpq_init();
+		gl_init();
+
+		// Timer + input. joypad_init() must run before the first rdpq present.
+		timer_init();
+		joypad_init();
+	}
+}
+
+// Real engine entry points (declared here to avoid pulling heavy engine headers into main).
+namespace TFE_Jedi
+{
+	s32  vfb_setResolution(u32 width, u32 height);
+	void renderer_init();
+	s32  level_load(const char* levelName, u8 difficulty);
+	s32  level_loadGeometry(const char* levelName);
+	s32  level_loadObjects(const char* levelName, u8 difficulty);
+	void level_clearData();
+
+	// Task system (real engine coroutine scheduler) driven once per frame.
+	void  task_updateTime();
+	JBool task_run();
+}
+namespace TFE_DarkForces
+{
+	// Advances s_curTick / s_deltaTime / s_frameTicks from real time (drives AI timing).
+	void updateTime();
+}
+namespace TFE_N64
+{
+	void initEngineRegions();
+	void setupLevelRenderer();
+	void startActorSystem();
+	void updateCameraN64();
+	void updateObjectBehaviorN64();
+	void renderLevelFrame(u8* display);
+}
+
+int main(void)
+{
+	platformInit();
+
+	// Render backend (libdragon present path).
+	WindowState windowState = {};
+	std::strcpy(windowState.name, "The Force Engine (N64)");
+	windowState.width            = 320;
+	windowState.height           = 240;
+	windowState.baseWindowWidth  = 320;
+	windowState.baseWindowHeight = 240;
+	windowState.monitorWidth     = 320;
+	windowState.monitorHeight    = 240;
+	windowState.flags            = WINFLAG_FULLSCREEN;
+	windowState.refreshRate      = 60.0f;
+	TFE_RenderBackend::init(windowState);
+
+	// Virtual display: 320x200 CI8 + palette (the software renderer's target).
+	VirtualDisplayInfo vdisp = {};
+	vdisp.mode    = DMODE_ASPECT_CORRECT;
+	vdisp.flags   = VDISP_GPU_COLOR_CONVERT;
+	vdisp.width   = 320;
+	vdisp.height  = 200;
+	vdisp.widthUi = 320;
+	vdisp.width3d = 320;
+	TFE_RenderBackend::createVirtualDisplay(vdisp);
+
+	buildTestPalette();
+	TFE_RenderBackend::setPalette(s_palette);
+
+	// --- Stage 2: load a real Dark Forces palette from DARK.GOB and apply it ---
+	{
+		GobArchive darkGob;
+		if (darkGob.open("rom:/DARK.GOB"))
+		{
+			const u32 count = darkGob.getFileCount();
+			debugf("[gob] DARK.GOB opened: %lu files\n", (unsigned long)count);
+
+			// Find the first palette (.PAL) entry.
+			s32 palIndex = -1;
+			for (u32 i = 0; i < count; i++)
+			{
+				const char* name = darkGob.getFileName(i);
+				if (name && strstr(name, ".PAL"))
+				{
+					palIndex = (s32)i;
+					debugf("[pal] using %s (%lu bytes)\n", name, (unsigned long)darkGob.getFileLength(i));
+					break;
+				}
+			}
+
+			// Extract the 768-byte 6-bit VGA palette and convert to RGBA (0xAABBGGRR).
+			if (palIndex >= 0 && darkGob.openFile((u32)palIndex))
+			{
+				u8 raw[768];
+				const size_t n = darkGob.readFile(raw, sizeof(raw));
+				darkGob.closeFile();
+				if (n >= sizeof(raw))
+				{
+					for (s32 i = 0; i < 256; i++)
+					{
+						const u8* c = &raw[i * 3];
+						const u32 r = (u32)((c[0] << 2) | (c[0] >> 4));
+						const u32 g = (u32)((c[1] << 2) | (c[1] >> 4));
+						const u32 b = (u32)((c[2] << 2) | (c[2] >> 4));
+						s_palette[i] = r | (g << 8) | (b << 16) | (0xffu << 24);
+					}
+					TFE_RenderBackend::setPalette(s_palette);
+					debugf("[pal] applied real DF palette\n");
+				}
+				else
+				{
+					debugf("[pal] short read (%lu bytes)\n", (unsigned long)n);
+				}
+			}
+			else
+			{
+				debugf("[pal] no .PAL found in DARK.GOB\n");
+			}
+		}
+		else
+		{
+			debugf("[gob] FAILED to open rom:/DARK.GOB\n");
+		}
+	}
+
+	// --- Stage 2 layer 3: decode and display a real Dark Forces texture (.BM) ---
+	{
+		static u8 fileBuf[100000];
+		GobArchive texGob;
+		if (texGob.open("rom:/TEXTURES.GOB"))
+		{
+			const u32 count = texGob.getFileCount();
+			debugf("[bm] TEXTURES.GOB opened: %lu files\n", (unsigned long)count);
+			for (u32 i = 0; i < count && !s_haveImage; i++)
+			{
+				const char* name = texGob.getFileName(i);
+				if (!name || !strstr(name, ".BM")) { continue; }
+				const size_t len = texGob.getFileLength(i);
+				if (len < 32 || len > sizeof(fileBuf)) { continue; }
+				if (!texGob.openFile(i)) { continue; }
+				const size_t nread = texGob.readFile(fileBuf, len);
+				texGob.closeFile();
+				if (nread == len)
+				{
+					memset(s_frameBuffer, 0, sizeof(s_frameBuffer));
+					if (decodeBitmapToFramebuffer(fileBuf, len, s_frameBuffer, 320, 200))
+					{
+						s_haveImage = true;
+						debugf("[bm] displaying %s (%lux%lu)\n", name,
+							(unsigned long)readU16LE(fileBuf + 4), (unsigned long)readU16LE(fileBuf + 6));
+					}
+				}
+			}
+			if (!s_haveImage) { debugf("[bm] no displayable .BM found\n"); }
+		}
+		else
+		{
+			debugf("[bm] FAILED to open rom:/TEXTURES.GOB\n");
+		}
+	}
+
+	// --- Stage 2 layer 4: parse a real level (.LEV) and draw its 2D wireframe map ---
+	{
+		static float vx[4096], vz[4096];
+		static float sx0[4096], sz0[4096], sx1[4096], sz1[4096];
+		GobArchive darkGob;
+		if (darkGob.open("rom:/DARK.GOB"))
+		{
+			const u32 count = darkGob.getFileCount();
+			for (u32 i = 0; i < count; i++)
+			{
+				const char* name = darkGob.getFileName(i);
+				if (!name || !strstr(name, ".LEV")) { continue; }
+				const size_t len = darkGob.getFileLength(i);
+				if (len < 16) { continue; }
+				if (!darkGob.openFile(i)) { continue; }
+				char* levBuf = (char*)malloc(len + 1);
+				if (!levBuf) { darkGob.closeFile(); continue; }
+				const size_t nread = darkGob.readFile(levBuf, len);
+				darkGob.closeFile();
+				if (nread != len) { free(levBuf); continue; }
+				levBuf[len] = 0;
+
+				// Parse each sector: VERTICES (X:/Z:) then WALLS (LEFT:/RIGHT:) -> line segments.
+				s32 vcount = 0, scount = 0, mode = 0;
+				char* line = levBuf;
+				while (line < levBuf + len)
+				{
+					char* nl = strchr(line, '\n');
+					if (nl) { *nl = 0; }
+					if (strstr(line, "VERTICES")) { mode = 1; vcount = 0; }
+					else if (strstr(line, "WALLS")) { mode = 2; }
+					else if (mode == 1)
+					{
+						char* xp = strstr(line, "X:");
+						char* zp = strstr(line, "Z:");
+						if (xp && zp && vcount < 4096)
+						{
+							vx[vcount] = strtof(xp + 2, nullptr);
+							vz[vcount] = strtof(zp + 2, nullptr);
+							vcount++;
+						}
+					}
+					else if (mode == 2)
+					{
+						char* lp = strstr(line, "LEFT:");
+						char* rp = strstr(line, "RIGHT:");
+						if (lp && rp)
+						{
+							const s32 l = atoi(lp + 5);
+							const s32 r = atoi(rp + 6);
+							if (l >= 0 && r >= 0 && l < vcount && r < vcount && scount < 4096)
+							{
+								sx0[scount] = vx[l]; sz0[scount] = vz[l];
+								sx1[scount] = vx[r]; sz1[scount] = vz[r];
+								scount++;
+							}
+						}
+					}
+					if (!nl) { break; }
+					line = nl + 1;
+				}
+
+				debugf("[map] %s (%lu bytes): segs=%ld\n", name, (unsigned long)len, (long)scount);
+				if (scount > 0)
+				{
+					// High-contrast palette indices (brightest line, darkest background).
+					u8 bright = 255, dark = 0; u32 maxL = 0, minL = 0xffffffff;
+					for (s32 k = 0; k < 256; k++)
+					{
+						const u32 c = s_palette[k];
+						const u32 lum = (c & 0xff) + ((c >> 8) & 0xff) + ((c >> 16) & 0xff);
+						if (lum > maxL) { maxL = lum; bright = (u8)k; }
+						if (lum < minL) { minL = lum; dark = (u8)k; }
+					}
+
+					float minx = 1e30f, maxx = -1e30f, minz = 1e30f, maxz = -1e30f;
+					for (s32 k = 0; k < scount; k++)
+					{
+						if (sx0[k] < minx) { minx = sx0[k]; } if (sx0[k] > maxx) { maxx = sx0[k]; }
+						if (sx1[k] < minx) { minx = sx1[k]; } if (sx1[k] > maxx) { maxx = sx1[k]; }
+						if (sz0[k] < minz) { minz = sz0[k]; } if (sz0[k] > maxz) { maxz = sz0[k]; }
+						if (sz1[k] < minz) { minz = sz1[k]; } if (sz1[k] > maxz) { maxz = sz1[k]; }
+					}
+					const float wspan = maxx - minx, hspan = maxz - minz;
+					if (wspan > 0.0f && hspan > 0.0f)
+					{
+						const float margin = 8.0f;
+						const float scx = (320.0f - 2.0f * margin) / wspan;
+						const float scz = (200.0f - 2.0f * margin) / hspan;
+						const float sc = scx < scz ? scx : scz;
+						memset(s_frameBuffer, dark, sizeof(s_frameBuffer));
+						for (s32 k = 0; k < scount; k++)
+						{
+							const s32 px0 = (s32)(margin + (sx0[k] - minx) * sc);
+							const s32 py0 = (s32)(200.0f - margin - (sz0[k] - minz) * sc);
+							const s32 px1 = (s32)(margin + (sx1[k] - minx) * sc);
+							const s32 py1 = (s32)(200.0f - margin - (sz1[k] - minz) * sc);
+							drawLine(s_frameBuffer, 320, 200, px0, py0, px1, py1, bright);
+						}
+						s_haveImage = true;
+						debugf("[map] drew %ld segments for %s\n", (long)scount, name);
+					}
+				}
+				free(levBuf);
+				break;
+			}
+		}
+	}
+
+	// --- Stage 3: bring up the real engine render path (level geometry load) ---
+	bool engine3D = false;
+	{
+		TFE_N64::initEngineRegions();
+		TFE_Jedi::vfb_setResolution(320, 200);
+		TFE_Jedi::renderer_init();
+		// Direct geometry loading bypasses mission bootstrap; initialize level state first.
+		TFE_Jedi::level_clearData();
+		// Geometry-only probe: parses SECBASE.LEV sectors/walls + wall/floor textures
+		// from the staged GOBs. Avoids the object/INF/goal paths (not brought up yet).
+		const s32 loaded = TFE_Jedi::level_loadGeometry("SECBASE");
+		debugf("[engine] level_loadGeometry SECBASE -> %ld\n", (long)loaded);
+		if (loaded)
+		{
+			// Set up the fixed-point software renderer + camera first (geometry-only).
+			TFE_N64::setupLevelRenderer();
+			// Bring up the real actor AI system (framebreak task + actor logic/physics
+			// tasks) BEFORE loading objects so enemy SEQ parsing wires into it.
+			TFE_N64::startActorSystem();
+			// Load level objects (enemies/items) from SECBASE.O. Enemies now receive real
+			// ActorDispatch logic; the PLAYER object becomes the AI chase target. Difficulty 0.
+			const s32 objLoaded = TFE_Jedi::level_loadObjects("SECBASE", 0);
+			debugf("[engine] level_loadObjects SECBASE -> %ld\n", (long)objLoaded);
+			engine3D = true;
+		}
+	}
+
+	// TODO (next stage) — engine bring-up that produces real frames:
+	//   TFE_Paths::set*; TFE_Settings::init (force RENDERER_SOFTWARE @ 320x200);
+	//   TFE_Palette::createDefault256; game_init(); inputMapping_startup();
+	//   s_curGame = createGame(Game_Dark_Forces); s_curGame->runGame(...);
+	//   Then per frame: s_curGame->loopGame(); TFE_Jedi::task_run(); and present
+	//   vfb_getCpuBuffer() instead of the test pattern below.
+
+	u32 frame = 0;
+	while (true)
+	{
+		// Input.
+		joypad_poll();
+
+		// Frame production: real 3D scene if the engine is up, else the 2D map / test pattern.
+		if (engine3D)
+		{
+			TFE_N64::updateCameraN64();
+			TFE_DarkForces::updateTime();          // advance s_curTick / s_frameTicks from real time
+			TFE_Jedi::task_updateTime();
+			TFE_Jedi::task_run();                 // run real engine tasks (AI/anim/INF logic)
+			TFE_N64::renderLevelFrame(s_frameBuffer);
+		}
+		else if (!s_haveImage) { drawTestPattern(frame); }
+
+		// Present: hand the CI8 framebuffer to the backend and blit it to the screen.
+		TFE_RenderBackend::updateVirtualDisplay(s_frameBuffer, 320 * 200);
+		TFE_RenderBackend::swap(true);
+
+		frame++;
+	}
+
+	TFE_RenderBackend::destroy();
+	return 0;
+}
+
+#if 0  // --- desktop SDL event handler (disabled on N64) ---
 void handleEvent(SDL_Event& Event)
 {
 	TFE_Ui::setUiInput(&Event);
@@ -269,9 +664,6 @@ bool sdlInit()
 
 	return true;
 }
-
-static AppState s_curState = APP_STATE_UNINIT;
-static bool s_soundPaused = false;
 
 void setAppState(AppState newState, int argc, char* argv[])
 {
@@ -496,7 +888,9 @@ bool validatePath()
 	}
 	return TFE_Paths::hasPath(PATH_SOURCE_DATA);
 }
+#endif  // --- end disabled desktop code ---
 
+#if 0  // --- desktop main() (disabled on N64) ---
 int main(int argc, char* argv[])
 {
 	#if INSTALL_CRASH_HANDLER
@@ -1083,3 +1477,4 @@ void parseOption(const char* name, const std::vector<const char*>& values, bool 
 		}
 	}
 }
+#endif  // --- end disabled desktop main() ---

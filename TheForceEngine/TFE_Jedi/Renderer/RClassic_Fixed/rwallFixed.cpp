@@ -2173,6 +2173,23 @@ namespace RClassic_Fixed
 		}
 	}
 
+#if defined(N64)
+	// WAX is a byte-packed (#pragma pack(1)) format, so a cell's column-offset
+	// table can land on a non-4-aligned address (cells follow previous cells'
+	// variable-length compressed data). GCC emits unaligned-safe lwl/lwr for
+	// packed struct members, but a plain (u32*) deref becomes a 32-bit lw that
+	// faults on MIPS. The table was byte-swapped to native order at load, so read
+	// each entry byte-wise in native (big-endian) order.
+	static inline u32 wax_readColumnOffset(const u32* table, s32 index)
+	{
+		const u8* p = (const u8*)(table + index);
+		return ((u32)p[0] << 24) | ((u32)p[1] << 16) | ((u32)p[2] << 8) | (u32)p[3];
+	}
+	#define WAX_COLUMN_OFFSET(table, index) wax_readColumnOffset((table), (index))
+#else
+	#define WAX_COLUMN_OFFSET(table, index) ((table)[(index)])
+#endif
+
 	// Refactor this into a sprite specific file.
 	void sprite_drawFrame(u8* basePtr, WaxFrame* frame, SecObject* obj)
 	{
@@ -2308,7 +2325,7 @@ namespace RClassic_Fixed
 										
 					if (compressed)
 					{
-						const u8* colPtr = (u8*)cell + columnOffset[texelU];
+						const u8* colPtr = (u8*)cell + WAX_COLUMN_OFFSET(columnOffset, texelU);
 
 						// Decompress the column into "work buffer."
 						assert(cell->sizeY <= 1024 && texelU >= 0 && texelU < cell->sizeX);
@@ -2317,7 +2334,7 @@ namespace RClassic_Fixed
 					}
 					else
 					{
-						s_texImage = (u8*)image + columnOffset[texelU];
+						s_texImage = (u8*)image + WAX_COLUMN_OFFSET(columnOffset, texelU);
 					}
 					// Output.
 					s_columnOut = &s_display[y0 * s_width + x];

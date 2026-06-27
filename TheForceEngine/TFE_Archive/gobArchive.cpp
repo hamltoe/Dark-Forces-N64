@@ -6,6 +6,21 @@
 #include <algorithm>
 #include <vector>
 
+namespace
+{
+	// GOB directory metadata is stored little-endian in densely packed 21-byte
+	// entries. N64 is big-endian and alignment-strict, so read fixed byte counts
+	// and decode 32-bit fields explicitly. readU32LE is endian-agnostic, so this
+	// stays correct on little-endian desktops too.
+	static const u32 GOB_HEADER_DISK_SIZE = 8;	// GOB_MAGIC[4] + MASTERX(u32)
+	static const u32 GOB_ENTRY_DISK_SIZE  = 21;	// IX(u32) + LEN(u32) + NAME[13]
+
+	static inline u32 readU32LE(const u8* p)
+	{
+		return (u32)p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) | ((u32)p[3] << 24);
+	}
+}
+
 GobArchive::~GobArchive()
 {
 	close();
@@ -46,18 +61,25 @@ bool GobArchive::validate(const char *archivePath, s32 minFileCount)
 	}
 
 	// Read the directory.
-	GOB_Header_t header;
-	long MASTERN;
-	if (file.readBuffer(&header, sizeof(GOB_Header_t)) != sizeof(GOB_Header_t))
+	u8 header[GOB_HEADER_DISK_SIZE];
+	if (file.readBuffer(header, GOB_HEADER_DISK_SIZE) != GOB_HEADER_DISK_SIZE)
 	{
 		file.close();
 		return false;
 	}
-	file.seek(header.MASTERX);
-	file.readBuffer(&MASTERN, sizeof(long));
+	const u32 masterX = readU32LE(header + 4);
+	file.seek(masterX);
+
+	u8 countBytes[4];
+	if (file.readBuffer(countBytes, 4) != 4)
+	{
+		file.close();
+		return false;
+	}
+	const u32 MASTERN = readU32LE(countBytes);
 	file.close();
 
-	return MASTERN >= minFileCount;
+	return (s32)MASTERN >= minFileCount;
 }
 
 bool GobArchive::open(const char *archivePath)
@@ -66,13 +88,52 @@ bool GobArchive::open(const char *archivePath)
 	m_curFile = -1;
 	if (!m_archiveOpen) { return false; }
 
-	// Read the directory.
-	m_file.readBuffer(&m_header, sizeof(GOB_Header_t));
-	m_file.seek(m_header.MASTERX);
+	// Read the header (GOB_MAGIC[4] + MASTERX, little-endian).
+	u8 header[GOB_HEADER_DISK_SIZE];
+	if (m_file.readBuffer(header, GOB_HEADER_DISK_SIZE) != GOB_HEADER_DISK_SIZE)
+	{
+		m_file.close();
+		m_archiveOpen = false;
+		return false;
+	}
+	memcpy(m_header.GOB_MAGIC, header, 4);
+	m_header.MASTERX = readU32LE(header + 4);
 
-	m_file.readBuffer(&m_fileList.MASTERN, sizeof(u32));
+	// Seek to the directory and read the file count (little-endian).
+	m_file.seek(m_header.MASTERX);
+	u8 countBytes[4];
+	if (m_file.readBuffer(countBytes, 4) != 4)
+	{
+		m_file.close();
+		m_archiveOpen = false;
+		return false;
+	}
+	m_fileList.MASTERN = readU32LE(countBytes);
+
+	// Guard against corrupt/byte-swapped counts before allocating.
+	if (m_fileList.MASTERN == 0 || m_fileList.MASTERN > 100000)
+	{
+		m_fileList.entries = nullptr;
+		m_fileList.MASTERN = 0;
+		m_file.close();
+		m_archiveOpen = false;
+		return false;
+	}
+
+	// Read each directory entry (IX, LEN little-endian; NAME[13]).
 	m_fileList.entries = new GOB_Entry_t[m_fileList.MASTERN];
-	m_file.readBuffer(m_fileList.entries, sizeof(GOB_Entry_t), m_fileList.MASTERN);
+	for (u32 i = 0; i < m_fileList.MASTERN; i++)
+	{
+		u8 entry[GOB_ENTRY_DISK_SIZE];
+		if (m_file.readBuffer(entry, GOB_ENTRY_DISK_SIZE) != GOB_ENTRY_DISK_SIZE)
+		{
+			m_fileList.MASTERN = i;
+			break;
+		}
+		m_fileList.entries[i].IX  = readU32LE(entry);
+		m_fileList.entries[i].LEN = readU32LE(entry + 4);
+		memcpy(m_fileList.entries[i].NAME, entry + 8, 13);
+	}
 
 	strcpy(m_archivePath, archivePath);
 	m_file.close();

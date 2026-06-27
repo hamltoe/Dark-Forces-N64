@@ -60,25 +60,33 @@ namespace TFE_Jedi
 		return res;
 	}
 
+	// DF assets are little-endian; assemble bytes explicitly so the loader is
+	// endian-agnostic and avoids unaligned 16/32-bit loads (which fault on MIPS).
 	s16 readShort(const u8*& data)
 	{
-		s16 res = *((s16*)data);
+		s16 res = (s16)((u16)data[0] | ((u16)data[1] << 8));
 		data += 2;
 		return res;
 	}
 
 	u16 readUShort(const u8*& data)
 	{
-		u16 res = *((u16*)data);
+		u16 res = (u16)((u16)data[0] | ((u16)data[1] << 8));
 		data += 2;
 		return res;
 	}
 
 	s32 readInt(const u8*& data)
 	{
-		s32 res = *((s32*)data);
+		s32 res = (s32)((u32)data[0] | ((u32)data[1] << 8) | ((u32)data[2] << 16) | ((u32)data[3] << 24));
 		data += 4;
 		return res;
+	}
+
+	// Non-advancing little-endian u32 read (e.g. compressed column offset table).
+	u32 readU32LE(const u8* data)
+	{
+		return (u32)data[0] | ((u32)data[1] << 8) | ((u32)data[2] << 16) | ((u32)data[3] << 24);
 	}
 
 	void bitmap_setupAnimationTask()
@@ -395,7 +403,7 @@ namespace TFE_Jedi
 				const u8* inBuffer = data;
 				data += inSize;
 
-				const u32* columns = (u32*)data;
+				const u8* columnData = data;
 				data += sizeof(u32) * texture->width;
 				assert(data <= end);
 
@@ -404,7 +412,7 @@ namespace TFE_Jedi
 					u8* dst = texture->image;
 					for (s32 i = 0; i < texture->width; i++, dst += texture->height)
 					{
-						const u8* src = &inBuffer[columns[i]];
+						const u8* src = &inBuffer[readU32LE(columnData + i * sizeof(u32))];
 						decompressColumn_Type1(src, dst, texture->height);
 					}
 				}
@@ -413,7 +421,7 @@ namespace TFE_Jedi
 					u8* dst = texture->image;
 					for (s32 i = 0; i < texture->width; i++, dst += texture->height)
 					{
-						const u8* src = &inBuffer[columns[i]];
+						const u8* src = &inBuffer[readU32LE(columnData + i * sizeof(u32))];
 						decompressColumn_Type2(src, dst, texture->height);
 					}
 				}
@@ -527,7 +535,7 @@ namespace TFE_Jedi
 				const u8* inBuffer = data;
 				data += inSize;
 
-				const u32* columns = (u32*)data;
+				const u8* columnData = data;
 				data += sizeof(u32) * texture->width;
 
 				if (texture->compressed == 1)
@@ -535,7 +543,7 @@ namespace TFE_Jedi
 					u8* dst = texture->image;
 					for (s32 i = 0; i < texture->width; i++, dst += texture->height)
 					{
-						const u8* src = &inBuffer[columns[i]];
+						const u8* src = &inBuffer[readU32LE(columnData + i * sizeof(u32))];
 						decompressColumn_Type1(src, dst, texture->height);
 					}
 				}
@@ -544,7 +552,7 @@ namespace TFE_Jedi
 					u8* dst = texture->image;
 					for (s32 i = 0; i < texture->width; i++, dst += texture->height)
 					{
-						const u8* src = &inBuffer[columns[i]];
+						const u8* src = &inBuffer[readU32LE(columnData + i * sizeof(u32))];
 						decompressColumn_Type2(src, dst, texture->height);
 					}
 				}
@@ -615,7 +623,8 @@ namespace TFE_Jedi
 		}
 
 		// In the original DOS code, this is directly set to pointers. But since TFE is compiled as 64-bit, pointers are not the correct size.
-		const u32* textureOffsets = (u32*)(tex->image + 2);
+		// DF stores these frame offsets little-endian; read them byte-wise (endian-agnostic + unaligned-safe on MIPS).
+		const u8* textureOffsets = tex->image + 2;
 		AnimatedTexture* anim = (AnimatedTexture*)allocator_newItem(s_texState.textureAnimAlloc);
 		if (!anim)
 			return nullptr;
@@ -629,6 +638,7 @@ namespace TFE_Jedi
 		anim->frameList = (TextureData**)level_alloc(sizeof(TextureData**) * anim->count);
 		// Allocate frame memory here since load-in-place does not work because structure size changes.
 		TextureData* outFrames = (TextureData*)level_alloc(sizeof(TextureData) * anim->count);
+		if (!anim->frameList || !outFrames) { return nullptr; }
 		memset(outFrames, 0, sizeof(TextureData) * anim->count);
 		assert(anim->frameList);
 
@@ -636,23 +646,35 @@ namespace TFE_Jedi
 		const s64 imageBase = s64(tex->image);
 		for (s32 i = 0; i < anim->count; i++)
 		{
-			const TextureData* frame = (TextureData*)(base + textureOffsets[i]);
+			const u8* framePtr = base + readU32LE(textureOffsets + i * sizeof(u32));
+			const TextureData* frame = (TextureData*)framePtr;
 			outFrames[i] = *frame;
 
+			// The on-disk frame header is little-endian; the raw struct copy above byte-swaps
+			// these multi-byte fields on big-endian targets, so decode them explicitly.
+			outFrames[i].width    = (u16)((u16)framePtr[0x00] | ((u16)framePtr[0x01] << 8));
+			outFrames[i].height   = (u16)((u16)framePtr[0x02] | ((u16)framePtr[0x03] << 8));
+			outFrames[i].uvWidth  = (s16)((u16)framePtr[0x04] | ((u16)framePtr[0x05] << 8));
+			outFrames[i].uvHeight = (s16)((u16)framePtr[0x06] | ((u16)framePtr[0x07] << 8));
+			outFrames[i].dataSize = readU32LE(framePtr + 0x08);
+
 			// Somehow this doesn't crash in DOS...
-			if (frame->width >= 16384 || frame->height >= 16384)
+			if (outFrames[i].width >= 16384 || outFrames[i].height >= 16384)
 			{
 				outFrames[i] = outFrames[0];
 			}
 
 			// Allocate an image buffer since everything no longer fits nicely.
 			outFrames[i].image = (u8*)level_alloc(outFrames[i].width * outFrames[i].height);
+			if (!outFrames[i].image) { return nullptr; }
 			memset(outFrames[i].image, 0, outFrames[i].width * outFrames[i].height);
 			
 			// Verify that we don't read past the end of the buffer.
 			const s64 curOffset = s64((u8*)frame + 0x1c - imageBase);
 			const s64 maxSize = tex->dataSize - curOffset;
-			const s64 sizeToCopy = (s64)max(0, min(maxSize, outFrames[i].width * outFrames[i].height));
+			const s64 frameBytes = (s64)outFrames[i].width * (s64)outFrames[i].height;
+			s64 sizeToCopy = maxSize < frameBytes ? maxSize : frameBytes;
+			if (sizeToCopy < 0) { sizeToCopy = 0; }
 			memcpy(outFrames[i].image, (u8*)frame + 0x1c, sizeToCopy);
 			
 			// We have to make sure the structure offsets line up with DOS...
@@ -698,7 +720,7 @@ namespace TFE_Jedi
 
 		if (frameRate)
 		{
-			anim->delay = time_frameRateToDelay(frameRate);	// Delay is in "ticks."
+			anim->delay = time_frameRateToDelay((u32)frameRate);	// Delay is in "ticks."
 			anim->nextTick = 0;
 			*texture = anim->frameList[0];
 		}

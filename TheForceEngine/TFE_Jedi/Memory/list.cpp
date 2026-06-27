@@ -1,4 +1,5 @@
 #include <cstring>
+#include <cstdint>
 
 #include "list.h"
 #include <TFE_Game/igame.h>
@@ -99,16 +100,22 @@ namespace TFE_Jedi
 	List* list_allocate(s32 elemSize, s32 capacity)
 	{
 		elemSize++;
-		s32 size = elemSize * capacity + sizeof(List);
+		// The payload returned by list_addItem() is (flag byte + 1). On N64 a payload
+		// holding pointers / fixed16_16 / s64 must be naturally aligned, else the CPU
+		// faults on an aligned load/store. Round the element step up to a multiple of 8
+		// and start the flag byte at (aligned - 1) so every payload is 8-byte aligned.
+		s32 step = (elemSize + 7) & ~7;
+		s32 size = step * capacity + sizeof(List) + 8;
 		List* list = (List*)game_alloc(size);
-		u8* end = (u8*)list + size;
-		list->end = end - elemSize;
 		list->self = list;
-
-		u8* start = (u8*)list + sizeof(List);
-		list->head = start;
-		list->step = elemSize;
+		list->step = step;
 		list->capacity = capacity;
+
+		u8* base = (u8*)list + sizeof(List);
+		uintptr_t firstPayload = ((uintptr_t)base + 1 + 7) & ~(uintptr_t)7;
+		u8* head = (u8*)(firstPayload - 1);
+		list->head = head;
+		list->end  = head + step * (capacity - 1);
 
 		initializeList(list);
 		return list;
@@ -118,13 +125,14 @@ namespace TFE_Jedi
 	{
 		if (!list) { return; }
 
-		s32 size = list->step * list->capacity + sizeof(List);
-		u8* end = (u8*)list + size;
-		list->end = end - list->step;
+		// Mirror the aligned layout established in list_allocate() (step/capacity are
+		// preserved from allocation); recompute the 8-byte aligned head + end.
+		u8* base = (u8*)list + sizeof(List);
+		uintptr_t firstPayload = ((uintptr_t)base + 1 + 7) & ~(uintptr_t)7;
+		u8* head = (u8*)(firstPayload - 1);
 		list->self = list;
-
-		u8* start = (u8*)list + sizeof(List);
-		list->head = start;
+		list->head = head;
+		list->end  = head + list->step * (list->capacity - 1);
 
 		initializeList(list);
 	}

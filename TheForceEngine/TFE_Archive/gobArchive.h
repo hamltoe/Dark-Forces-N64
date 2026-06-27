@@ -45,9 +45,10 @@ public:
 	void addFile(const char* fileName, const char* filePath) override;
 
 private:
-	#pragma pack(push)
-	#pragma pack(1)
-
+	// NOTE: These describe the in-memory directory. The on-disk GOB layout is
+	// little-endian and densely packed; it is decoded explicitly in gobArchive.cpp
+	// (N64 is big-endian and cannot perform unaligned/packed loads), so these structs
+	// are kept naturally aligned here.
 	typedef struct
 	{
 		char GOB_MAGIC[4];
@@ -66,8 +67,6 @@ private:
 		u32 MASTERN;	// num files
 		GOB_Entry_t *entries;
 	} GOB_Index_t;
-
-	#pragma pack(pop)
 
 	FileStream m_file;
 	bool m_archiveOpen;

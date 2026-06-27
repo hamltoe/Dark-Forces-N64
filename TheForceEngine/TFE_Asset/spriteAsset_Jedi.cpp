@@ -46,6 +46,11 @@ namespace TFE_Sprite_Jedi
 	static NameList    s_spriteNames[POOL_COUNT];
 	static std::vector<u8> s_buffer;
 
+	static inline u32 alignUp4(u32 value)
+	{
+		return (value + 3u) & ~3u;
+	}
+
 	bool loadFrameHd(const char* name, const JediFrame* frame, AssetPool pool, HdWax* hdWax, const WaxCell* cell)
 	{
 		char hdPath[TFE_MAX_PATH];
@@ -98,6 +103,95 @@ namespace TFE_Sprite_Jedi
 		return true;
 	}
 
+#if defined(N64)
+	// ---- N64 (big-endian) WAX/FME endian conversion ----------------------------
+	// WAX/FME are little-endian "load-in-place" formats: nested offset tables
+	// (anim -> view -> frame -> cell) plus per-record multi-byte fields. On a
+	// big-endian target every multi-byte value byte-swaps and the offset tables
+	// turn into wild pointers. Swap the whole structure to native exactly ONCE,
+	// right after reading the file, so the existing loader + renderer work as-is.
+	// Shared views/frames/cells are visited once to avoid double-swapping.
+	static inline void wax_swap32(u8* p)
+	{
+		const u8 a = p[0], b = p[1], c = p[2], d = p[3];
+		p[0] = d; p[1] = c; p[2] = b; p[3] = a;
+	}
+	static void wax_swapRange(u8* data, size_t size, u32 off, u32 bytes)
+	{
+		if ((size_t)off + (size_t)bytes > size) { return; }
+		for (u32 o = 0; o < bytes; o += 4) { wax_swap32(data + off + o); }
+	}
+	static bool wax_visit(std::vector<u32>& seen, u32 off)
+	{
+		for (size_t i = 0; i < seen.size(); i++) { if (seen[i] == off) { return false; } }
+		seen.push_back(off);
+		return true;
+	}
+	static void wax_swapCell(u8* data, size_t size, u32 cellOff)
+	{
+		wax_swapRange(data, size, cellOff, 0x18);   // sizeX,sizeY,compressed,id,columnOffset,textureId
+		const WaxCell* cell = (WaxCell*)(data + cellOff);
+		if (cell->compressed)
+		{
+			const s32 columnCount = cell->sizeX;
+			if (columnCount <= 0) { return; }
+
+			// Use the file-provided column table offset when present.
+			// Some assets do not keep this table immediately after the WaxCell.
+			u32 colTab = cell->columnOffset ? cell->columnOffset : (cellOff + (u32)sizeof(WaxCell));
+			const size_t tableSize = (size_t)columnCount * sizeof(u32);
+			if ((size_t)colTab + tableSize > size && colTab != cellOff + (u32)sizeof(WaxCell))
+			{
+				// Fallback for malformed/non-standard offsets.
+				colTab = cellOff + (u32)sizeof(WaxCell);
+			}
+			if ((size_t)colTab + tableSize > size) { return; }
+
+			for (s32 c = 0; c < columnCount; c++)
+			{
+				wax_swap32(data + colTab + (u32)c * 4);
+			}
+		}
+	}
+	static void swapFrameToNative(u8* data, size_t size)
+	{
+		wax_swapRange(data, size, 0, 0x10);   // WaxFrame: offsetX,offsetY,flip,cellOffset
+		const WaxFrame* frame = (WaxFrame*)data;
+		if (frame->cellOffset) { wax_swapCell(data, size, (u32)frame->cellOffset); }
+	}
+	static void swapWaxToNative(u8* data, size_t size)
+	{
+		std::vector<u32> seen;
+		wax_swapRange(data, size, 0, 0xA0);   // Wax header + animOffsets[32]
+		const Wax* wax = (Wax*)data;
+		for (s32 a = 0; a < 32 && wax->animOffsets[a]; a++)
+		{
+			const u32 animOff = (u32)wax->animOffsets[a];
+			if (!wax_visit(seen, animOff)) { continue; }
+			wax_swapRange(data, size, animOff, 0x9C);   // WaxAnim header + viewOffsets[32]
+			const WaxAnim* anim = (WaxAnim*)(data + animOff);
+			for (s32 v = 0; v < 32; v++)
+			{
+				const u32 viewOff = (u32)anim->viewOffsets[v];
+				if (!viewOff || !wax_visit(seen, viewOff)) { continue; }
+				wax_swapRange(data, size, viewOff, 0x90);   // WaxView pad + frameOffsets[32]
+				const WaxView* view = (WaxView*)(data + viewOff);
+				for (s32 f = 0; f < 32 && view->frameOffsets[f]; f++)
+				{
+					const u32 frameOff = (u32)view->frameOffsets[f];
+					if (!wax_visit(seen, frameOff)) { continue; }
+					wax_swapRange(data, size, frameOff, 0x10);   // WaxFrame on-disk fields
+					const WaxFrame* fr = (WaxFrame*)(data + frameOff);
+					if (fr->cellOffset && wax_visit(seen, (u32)fr->cellOffset))
+					{
+						wax_swapCell(data, size, (u32)fr->cellOffset);
+					}
+				}
+			}
+		}
+	}
+#endif
+
 	JediFrame* getFrame(const char* name, AssetPool pool)
 	{
 		FrameMap::iterator iFrame = s_frames[pool].find(name);
@@ -122,16 +216,20 @@ namespace TFE_Sprite_Jedi
 		file.readBuffer(s_buffer.data(), u32(len));
 		file.close();
 
+#if defined(N64)
+		swapFrameToNative(s_buffer.data(), s_buffer.size());
+#endif
 		const u8* data = s_buffer.data();
 
 		// Determine ahead of time how much we need to allocate.
 		const WaxFrame* base_frame = (WaxFrame*)data;
 		const WaxCell* base_cell = WAX_CellPtr(data, base_frame);
 		const u32 columnSize = base_cell->sizeX * sizeof(u32);
+		const u32 columnStart = alignUp4((u32)s_buffer.size());
 
 		// This is a "load in place" format in the original code.
 		// We are going to allocate new memory and copy the data.
-		u8* assetPtr = (u8*)malloc(s_buffer.size() + columnSize);
+		u8* assetPtr = (u8*)malloc(columnStart + columnSize);
 		JediFrame* asset = (JediFrame*)assetPtr;
 		
 		memcpy(asset, data, s_buffer.size());
@@ -158,7 +256,7 @@ namespace TFE_Sprite_Jedi
 		}
 		else
 		{
-			u32* columns = (u32*)((u8*)asset + s_buffer.size());
+			u32* columns = (u32*)((u8*)asset + columnStart);
 			// Local pointer.
 			cell->columnOffset = u32((u8*)columns - (u8*)asset);
 			// Calculate column offsets.
@@ -200,10 +298,11 @@ namespace TFE_Sprite_Jedi
 		const WaxFrame* base_frame = (WaxFrame*)data;
 		const WaxCell* base_cell = WAX_CellPtr(data, base_frame);
 		const u32 columnSize = base_cell->sizeX * sizeof(u32);
+		const u32 columnStart = alignUp4((u32)size);
 
 		// This is a "load in place" format in the original code.
 		// We are going to allocate new memory and copy the data.
-		u8* assetPtr = (u8*)malloc(size + columnSize);
+		u8* assetPtr = (u8*)malloc(columnStart + columnSize);
 		JediFrame* asset = (JediFrame*)assetPtr;
 
 		memcpy(asset, data, size);
@@ -231,7 +330,7 @@ namespace TFE_Sprite_Jedi
 		}
 		else
 		{
-			u32* columns = (u32*)((u8*)asset + size);
+			u32* columns = (u32*)((u8*)asset + columnStart);
 			// Local pointer.
 			cell->columnOffset = u32((u8*)columns - (u8*)asset);
 			// Calculate column offsets.
@@ -407,6 +506,9 @@ namespace TFE_Sprite_Jedi
 		file.readBuffer(s_buffer.data(), u32(len));
 		file.close();
 
+#if defined(N64)
+		swapWaxToNative(s_buffer.data(), s_buffer.size());
+#endif
 		u8* data = s_buffer.data();
 		Wax* srcWax = (Wax*)data;
 		
@@ -419,7 +521,8 @@ namespace TFE_Sprite_Jedi
 
 		// First determine the size to allocate (note that this will overallocate a bit because cells are shared).
 		u32 cellId = 0;
-		u32 sizeToAlloc = sizeof(JediWax) + (u32)s_buffer.size();
+		const u32 columnStart = alignUp4((u32)s_buffer.size());
+		u32 sizeToAlloc = sizeof(JediWax) + columnStart;
 		const s32* animOffset = srcWax->animOffsets;
 		for (s32 animIdx = 0; animIdx < 32 && animOffset[animIdx]; animIdx++)
 		{
@@ -512,7 +615,7 @@ namespace TFE_Sprite_Jedi
 							}
 							else
 							{
-								u32* columns = (u32*)((u8*)asset + s_buffer.size() + cellOffsetPtr);
+								u32* columns = (u32*)((u8*)asset + columnStart + cellOffsetPtr);
 								cellOffsetPtr += dstCell->sizeX * sizeof(u32);
 
 								// Local pointer.
@@ -593,7 +696,8 @@ namespace TFE_Sprite_Jedi
 		s_cellOffsets.clear();
 
 		// First determine the size to allocate (note that this will overallocate a bit because cells are shared).
-		u32 sizeToAlloc = sizeof(JediWax) + (u32)size;
+		const u32 columnStart = alignUp4((u32)size);
+		u32 sizeToAlloc = sizeof(JediWax) + columnStart;
 		const s32* animOffset = srcWax->animOffsets;
 		for (s32 animIdx = 0; animIdx < 32 && animOffset[animIdx]; animIdx++)
 		{
@@ -688,7 +792,7 @@ namespace TFE_Sprite_Jedi
 							}
 							else
 							{
-								u32* columns = (u32*)((u8*)asset + size + cellOffsetPtr);
+								u32* columns = (u32*)((u8*)asset + columnStart + cellOffsetPtr);
 								cellOffsetPtr += dstCell->sizeX * sizeof(u32);
 
 								// Local pointer.

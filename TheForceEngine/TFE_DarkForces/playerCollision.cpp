@@ -17,8 +17,10 @@
 
 // TFE
 #include <TFE_Jedi/Level/rtexture.h>
+#ifndef N64
 #include <TFE_RenderBackend/renderBackend.h>
 #include <TFE_Asset/imageAsset.h>
+#endif
 #include <TFE_FileSystem/fileutil.h>
 
 // TFE
@@ -97,7 +99,9 @@ namespace TFE_DarkForces
 	JBool s_objCollisionEnabled = JTRUE;
 	vec2_fixed s_colResponseDir;
 
+#ifndef N64
 	void console_exportTexture(const std::vector<std::string>& args);
+#endif
 
 	///////////////////////////////////////////
 	// Implementation
@@ -715,9 +719,12 @@ namespace TFE_DarkForces
 		// Reset to 0 on all collisions to ensure replay consistency. 
 		s_collisionFrameSector = 0;
 		s_collisionFrameWall = 0;
+#ifndef N64
 		CCMD("exportTexture", console_exportTexture, 0, "Export the texture at the center of the screen.");
+#endif
 	}
 
+#ifndef N64
 	const char* getTextureName(TextureData* hitTex)
 	{
 		AssetPool pool;
@@ -841,4 +848,5 @@ namespace TFE_DarkForces
 			TFE_Image::writeImage(outputName, hitTex->width, hitTex->height, outBuffer);
 		}
 	}
+#endif
 }  // TFE_DarkForces
