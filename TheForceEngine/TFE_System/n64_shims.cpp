@@ -29,6 +29,7 @@
 #include <TFE_RenderBackend/renderBackend.h>     // setPalette
 #include <TFE_FileSystem/filestream.h>           // FileStream (level palette load)
 #include <TFE_Jedi/Level/rwall.h>                 // RWall (inf wall stubs)
+#include <TFE_Jedi/Collision/collision.h>         // collision_moveObj (player wall collision)
 
 // Actor-AI host stubs: the real player/sound/hitEffect/pickup/item/weapon/
 // generator/vueLogic/updateLogic/gameMusic/ExternalData sources are not linked
@@ -46,6 +47,7 @@
 #include <TFE_DarkForces/gameMusic.h>
 #include <TFE_DarkForces/projectile.h>          // ProjectileLogic, PROJ_COUNT
 #include <TFE_DarkForces/animLogic.h>            // setSpriteAnimation (sprite-anim task reset)
+#include <TFE_DarkForces/logic.h>                // Logic, LOGIC_PLAYER, obj_addLogic (player damage routing)
 #include <TFE_DarkForces/Actor/actor.h>          // actor_createTask / clearState / physics list
 #include <TFE_DarkForces/time.h>                  // updateTime (drives s_curTick + s_frameTicks)
 #include <TFE_Jedi/Level/rsector.h>               // sector_addObject (player-object relink)
@@ -147,10 +149,110 @@ namespace TFE_DarkForces
 	SoundSourceId s_missile1SndSrc     = 0;
 
 	// ---- Player queries used by actor targeting / collision ----
-	void player_setupObject(SecObject* obj)  { s_playerObject = obj; }
+	// Player health/inventory. HUD/weapon/pickup systems aren't linked on N64, so we
+	// own these globals here (player.cpp is not compiled). Initialized in startActorSystem.
+	PlayerInfo s_playerInfo   = {};
+	s32        s_invincibility = 0;
+	s32        s_healthMax     = 100;
+	s32        s_shieldsMax    = 200;
+
+	// Apply damage to the player, faithful to the DOS shield-first model: shields take
+	// half-damage twice; once shields drop below 50 the overflow bleeds into health.
+	// Reaching zero health flags the player dying. Sound/screen-fx paths are omitted
+	// (those subsystems aren't linked yet).
+	void player_applyDamage(fixed16_16 healthDmg, fixed16_16 shieldDmg, JBool /*playHitSound*/)
+	{
+		using namespace TFE_Jedi;
+		fixed16_16 shields = intToFixed16(s_playerInfo.shields);
+		fixed16_16 health  = intToFixed16(s_playerInfo.health) + s_playerInfo.healthFract;
+
+		if (!s_invincibility && health && shieldDmg > 0)
+		{
+			fixed16_16 halfShieldDmg = shieldDmg >> 1;
+			shields -= halfShieldDmg; if (shields < 0) { shields = 0; }
+			if (shields < FIXED(50))
+			{
+				// healthDmg += shieldDmg * (1 - shields/50)
+				fixed16_16 fracDmgToHealth = ONE_16 - div16(shields, FIXED(50));
+				healthDmg += mul16(fracDmgToHealth, shieldDmg);
+			}
+			shields -= halfShieldDmg; if (shields < 0) { shields = 0; }
+			s32 newShields = floor16(shields);
+			if (newShields > s_shieldsMax) { newShields = s_shieldsMax; }
+			s_playerInfo.shields = newShields;
+		}
+
+		if (!s_invincibility && healthDmg > 0 && health)
+		{
+			health -= healthDmg;
+			if (health < ONE_16)
+			{
+				s_playerInfo.healthFract = 0;
+				s_playerInfo.health = 0;
+				s_playerDying = JTRUE;
+				s_reviveTick  = s_curTick + 436;
+			}
+			else
+			{
+				s_playerInfo.health      = floor16(health);
+				s_playerInfo.healthFract = fract16(health);
+			}
+		}
+
+		debugf("[player] hit -> health=%ld shields=%ld%s\n",
+			(long)s_playerInfo.health, (long)s_playerInfo.shields,
+			s_playerDying ? " DYING" : "");
+	}
+
+	// Minimal player task + logic so projectile hits deliver MSG_DAMAGE to the player.
+	// message_sendToObj() dispatches to the object's logic task via task_runLocal(), so
+	// the player object needs a logic parented to a task that owns a local message func.
+	static Task* s_n64PlayerTask  = nullptr;
+	static Logic s_n64PlayerLogic = {};
+
+	void n64PlayerTaskFunc(MessageType msg)
+	{
+		task_begin;
+		while (msg != MSG_FREE_TASK) { task_yield(TASK_NO_DELAY); }
+		task_end;
+	}
+	void n64PlayerCleanupFunc(Logic*) {}
+
+	// Mirrors playerControlMsgFunc: projectile damage is applied as shield damage.
+	void n64PlayerMsgFunc(MessageType msg)
+	{
+		using namespace TFE_Jedi;
+		if (msg == MSG_DAMAGE)
+		{
+			ProjectileLogic* proj = (ProjectileLogic*)s_msgEntity;
+			if (proj) { player_applyDamage(0, proj->dmg, JTRUE); }
+		}
+		else if (msg == MSG_EXPLOSION)
+		{
+			player_applyDamage(0, (fixed16_16)s_msgArg1, JTRUE);
+		}
+	}
+
+	void player_setupObject(SecObject* obj)
+	{
+		using namespace TFE_Jedi;
+		s_playerObject = obj;
+		if (!obj) { return; }
+
+		// Real player capsule so enemy projectiles register a hit on us.
+		obj->entityFlags |= ETFLAG_PLAYER;
+		obj->worldHeight  = 0x5cccc;   // PLAYER_HEIGHT (5.8 units)
+		obj->worldWidth   = 0x1cccc;   // PLAYER_WIDTH  (1.8 units)
+
+		// Create the damage-routing task once, then attach a player logic to the object.
+		if (!s_n64PlayerTask)
+		{
+			s_n64PlayerTask = createTask("n64player", n64PlayerTaskFunc, JFALSE, n64PlayerMsgFunc);
+		}
+		obj_addLogic(obj, &s_n64PlayerLogic, LOGIC_PLAYER, s_n64PlayerTask, n64PlayerCleanupFunc);
+	}
 	void player_setupEyeObject(SecObject*)   {}
 	void player_getVelocity(TFE_Jedi::vec3_fixed* vel) { if (vel) { vel->x = 0; vel->y = 0; vel->z = 0; } }
-	void player_applyDamage(fixed16_16, fixed16_16, JBool) {}
 	fixed16_16 player_getSquaredDistance(SecObject* obj)
 	{
 		if (!obj || !s_playerObject) { return FIXED(32767); }
@@ -408,6 +510,15 @@ namespace TFE_N64
 	static RSector*   s_camSector = nullptr;
 	static fixed16_16 s_camX = 0, s_camY = 0, s_camZ = 0;
 	static angle14_32 s_camYaw = 0, s_camPitch = 0;
+	// Player vertical physics. Eye height matches DF PLAYER_HEIGHT (the camera sits this
+	// far above the floor); jump impulse + gravity drive vertical velocity.
+	static const fixed16_16 PLAYER_EYE_HEIGHT   = 0x5cccc;   // 5.8 units (PLAYER_HEIGHT)
+	static const fixed16_16 PLAYER_JUMP_IMPULSE = -2850816;  // -43.5 units/sec (negative = up)
+	// Walk/strafe speeds (units/sec). Lower than DF's 256 for comfortable N64 control.
+	static const fixed16_16 PLAYER_WALK_SPEED   = FIXED(72);
+	static const fixed16_16 PLAYER_STRAFE_SPEED = FIXED(56);
+	static fixed16_16 s_playerVertVel = 0;
+	static bool       s_onGround      = true;
 	static std::vector<SpriteAnimState> s_spriteAnimState;
 	static u32 s_behaviorTick = 0;
 	static u32 s_behaviorFrame = 0;
@@ -504,7 +615,7 @@ namespace TFE_N64
 			{
 				const fixed16_16 px   = floatToFixed16(lastX);
 				const fixed16_16 pz   = floatToFixed16(lastZ);
-				const fixed16_16 eyeY = floatToFixed16(lastY) - FIXED(6);
+				const fixed16_16 eyeY = floatToFixed16(lastY) - PLAYER_EYE_HEIGHT;
 				RSector* sec = sector_which3D(px, eyeY, pz);
 				if (sec)
 				{
@@ -512,7 +623,7 @@ namespace TFE_N64
 					s_camZ = pz;
 					s_camYaw = (angle14_32)floatDegreesToFixed(lastYaw) & ANGLE_MASK;
 					s_camSector = sec;
-					s_camY = sec->floorHeight - FIXED(6);
+					s_camY = sec->floorHeight - PLAYER_EYE_HEIGHT;
 					found = true;
 				}
 				break;
@@ -551,6 +662,12 @@ namespace TFE_N64
 		// Reset the sprite-animation task/list (obj_setSpriteAnim recreates lazily).
 		setSpriteAnimation(nullptr, nullptr);
 
+		// Start the player at full health/shields.
+		s_playerInfo.health      = s_healthMax;
+		s_playerInfo.healthFract = 0;
+		s_playerInfo.shields     = 100;
+		s_playerDying            = JFALSE;
+
 		// Framebreak boundary first so task_run() always terminates each frame.
 		s_n64LoopTask = createTask("n64loop", n64LoopTaskFunc, JTRUE);
 
@@ -563,6 +680,21 @@ namespace TFE_N64
 		actor_allocatePhysicsActorList();
 		actor_clearState();
 		actor_createTask();
+	}
+
+	// Advance Dark Forces game time once per frame. updateTime() advances s_curTick /
+	// s_frameTicks (drives animation), but in the real engine the mission loop computes
+	// s_deltaTime separately; we bypass that loop. Without this, s_deltaTime stays 0 and
+	// every actor movement/rotation term (mul16(speed, s_deltaTime)) is 0 -> enemies
+	// animate & shoot but never translate or turn.
+	void updateGameTime()
+	{
+		using namespace TFE_DarkForces;
+		updateTime();
+		s_deltaTime = div16(intToFixed16(s_curTick - s_prevTick), FIXED(TICKS_PER_SECOND));
+		if (s_deltaTime > MAX_DELTA_TIME) { s_deltaTime = MAX_DELTA_TIME; }
+		s_prevTick = s_curTick;
+		s_prevTickFract = s_curTickFract;
 	}
 
 	void setupLevelRenderer()
@@ -594,7 +726,7 @@ namespace TFE_N64
 			const s32 vc = sector->vertexCount > 0 ? sector->vertexCount : 1;
 			s_camX = (fixed16_16)(sumX / vc);
 			s_camZ = (fixed16_16)(sumZ / vc);
-			s_camY = sector->floorHeight - FIXED(6);
+			s_camY = sector->floorHeight - PLAYER_EYE_HEIGHT;
 			if (s_camY < sector->ceilingHeight) { s_camY = (sector->floorHeight + sector->ceilingHeight) >> 1; }
 			s_camSector = sector;
 			haveCam = true;
@@ -612,15 +744,19 @@ namespace TFE_N64
 		}
 	}
 
-	// Read the controller and walk/look around the level. Movement only commits when
-	// the new position resolves to a real sector, so the camera can't leave the level.
+	// Read the controller and move the player around the level: stick to walk/turn,
+	// C-buttons to strafe/tilt, A to jump. Vertical motion uses DF gravity + jump
+	// impulse; the eye sits PLAYER_EYE_HEIGHT above the floor. Horizontal motion only
+	// commits when the new position resolves to a real sector (can't leave the level).
 	void updateCameraN64()
 	{
 		using namespace TFE_Jedi;
-		if (!s_renderReady) { return; }
+		using namespace TFE_DarkForces;
+		if (!s_renderReady || !s_camSector) { return; }
 
-		const joypad_inputs_t  in   = joypad_get_inputs(JOYPAD_PORT_1);
-		const joypad_buttons_t held = joypad_get_buttons_held(JOYPAD_PORT_1);
+		const joypad_inputs_t  in      = joypad_get_inputs(JOYPAD_PORT_1);
+		const joypad_buttons_t held    = joypad_get_buttons_held(JOYPAD_PORT_1);
+		const joypad_buttons_t pressed = joypad_get_buttons_pressed(JOYPAD_PORT_1);
 
 		// Analog stick with a small deadzone (neutral can drift on real sticks).
 		s32 sx = in.stick_x; if (sx > -8 && sx < 8) { sx = 0; }
@@ -633,44 +769,88 @@ namespace TFE_N64
 		if (s_camPitch >  2730) { s_camPitch =  2730; }
 		if (s_camPitch < -2730) { s_camPitch = -2730; }
 
-		// Move: stick Y walks forward/back along the facing; C-Left/Right strafe.
+		// Horizontal move, frame-rate independent via s_deltaTime. Walk/strafe speeds
+		// are tuned below DF's 256 u/s for comfortable N64 control.
 		fixed16_16 sinYaw, cosYaw;
 		sinCosFixed(s_camYaw, &sinYaw, &cosYaw);
 
-		fixed16_16 newX = s_camX;
-		fixed16_16 newZ = s_camZ;
-		const fixed16_16 fwd = sy * 384;
-		newX += mul16(fwd, sinYaw);
-		newZ += mul16(fwd, cosYaw);
-		if (held.c_right) { newX += mul16(0xC000, cosYaw); newZ -= mul16(0xC000, sinYaw); }
-		if (held.c_left)  { newX -= mul16(0xC000, cosYaw); newZ += mul16(0xC000, sinYaw); }
+		// Normalized stick fraction (N64 stick maxes ~+/-85); clamp to +/-1.0.
+		fixed16_16 stickFrac = sy * 768;
+		if (stickFrac >  ONE_16) { stickFrac =  ONE_16; }
+		if (stickFrac < -ONE_16) { stickFrac = -ONE_16; }
 
-		// Commit only if inside a real sector; keep the eye 6 units above that sector's floor.
-		RSector* next = sector_which3D(newX, s_camY, newZ);
-		if (next)
+		const fixed16_16 fwd = mul16(mul16(PLAYER_WALK_SPEED, s_deltaTime), stickFrac);
+		fixed16_16 strafe = 0;
+		if (held.c_right) { strafe =  mul16(PLAYER_STRAFE_SPEED, s_deltaTime); }
+		if (held.c_left)  { strafe = -mul16(PLAYER_STRAFE_SPEED, s_deltaTime); }
+
+		const fixed16_16 dx = mul16(fwd, sinYaw) + mul16(strafe, cosYaw);
+		const fixed16_16 dz = mul16(fwd, cosYaw) - mul16(strafe, sinYaw);
+
+		// Move with wall collision. collision_moveObj walks the full path and returns
+		// null when a solid wall blocks it (so we can't tunnel through walls); on a block
+		// we retry each axis so the player slides along the wall instead of sticking.
+		SecObject* pobj = s_playerObject;
+		if (pobj && (dx || dz))
 		{
-			s_camX = newX;
-			s_camZ = newZ;
-			s_camSector = next;
-			s_camY = next->floorHeight - FIXED(6);
+			RSector* res = collision_moveObj(pobj, dx, dz);
+			if (!res) { res = collision_moveObj(pobj, dx, 0); }
+			if (!res) { res = collision_moveObj(pobj, 0, dz); }
+			if (res)
+			{
+				s_camX = pobj->posWS.x;
+				s_camZ = pobj->posWS.z;
+				s_camSector = res;
+			}
+		}
+		else if (!pobj && (dx || dz))
+		{
+			// Fallback (no player object): point move, no wall collision.
+			RSector* next = sector_which3D(s_camX + dx, s_camY, s_camZ + dz);
+			if (next) { s_camX += dx; s_camZ += dz; s_camSector = next; }
 		}
 
-		// Glue the AI chase target (the player object created by level load) to the camera
-		// so enemies pursue the viewpoint. Relink sectors when we cross a boundary.
-		SecObject* pobj = TFE_DarkForces::s_playerObject;
+		// Vertical physics: gravity pulls toward the floor (y increases downward); a jump
+		// sets an upward (negative) impulse. The eye rests PLAYER_EYE_HEIGHT above floor.
+		const fixed16_16 floorEyeY = s_camSector->floorHeight - PLAYER_EYE_HEIGHT;
+		if (pressed.a && s_onGround) { s_playerVertVel = PLAYER_JUMP_IMPULSE; s_onGround = false; }
+		s_playerVertVel += mul16(s_gravityAccel, s_deltaTime);
+		s_camY += mul16(s_playerVertVel, s_deltaTime);
+
+		if (s_camY >= floorEyeY)        // at/under standing height -> on the ground
+		{
+			s_camY = floorEyeY;
+			s_playerVertVel = 0;
+			s_onGround = true;
+		}
+		else
+		{
+			s_onGround = false;
+		}
+		// Don't poke through the ceiling.
+		const fixed16_16 ceilEyeY = s_camSector->ceilingHeight + FIXED(1);
+		if (s_camY < ceilEyeY)
+		{
+			s_camY = ceilEyeY;
+			if (s_playerVertVel < 0) { s_playerVertVel = 0; }
+		}
+
+		// Glue the AI chase target (the player object) to the camera so enemies pursue
+		// the viewpoint, then feed the eye position to the renderer. Relink the player
+		// object's sector when we cross a boundary.
 		if (pobj)
 		{
 			pobj->posWS.x = s_camX;
-			pobj->posWS.y = s_camY + FIXED(6);   // camera is the eye; object origin is the feet
+			pobj->posWS.y = s_camY + PLAYER_EYE_HEIGHT;   // camera is the eye; object origin is the feet
 			pobj->posWS.z = s_camZ;
 			if (s_camSector && pobj->sector != s_camSector)
 			{
 				sector_addObject(s_camSector, pobj);
 			}
-			TFE_DarkForces::s_eyePos.x = s_camX;
-			TFE_DarkForces::s_eyePos.y = s_camY;
-			TFE_DarkForces::s_eyePos.z = s_camZ;
 		}
+		s_eyePos.x = s_camX;
+		s_eyePos.y = s_camY;
+		s_eyePos.z = s_camZ;
 	}
 
 	// Minimal non-AI object behavior pass.

@@ -182,6 +182,7 @@ namespace TFE_N64
 	void startActorSystem();
 	void updateCameraN64();
 	void updateObjectBehaviorN64();
+	void updateGameTime();
 	void renderLevelFrame(u8* display);
 }
 
@@ -460,7 +461,7 @@ int main(void)
 		if (engine3D)
 		{
 			TFE_N64::updateCameraN64();
-			TFE_DarkForces::updateTime();          // advance s_curTick / s_frameTicks from real time
+			TFE_N64::updateGameTime();             // advance s_curTick / s_deltaTime / s_frameTicks from real time
 			TFE_Jedi::task_updateTime();
 			TFE_Jedi::task_run();                 // run real engine tasks (AI/anim/INF logic)
 			TFE_N64::renderLevelFrame(s_frameBuffer);
