@@ -39,6 +39,7 @@ ENGINE_SRC = \
 	$(TFE_DIR)/TFE_Jedi/Math/core_math.cpp \
 	$(TFE_DIR)/TFE_Jedi/Math/cosTable.cpp \
 	$(TFE_DIR)/TFE_Jedi/Level/rtexture.cpp \
+	$(TFE_DIR)/TFE_Jedi/Level/rfont.cpp \
 	$(TFE_DIR)/TFE_Jedi/Level/rwall.cpp \
 	$(TFE_DIR)/TFE_Jedi/Level/rsector.cpp \
 	$(TFE_DIR)/TFE_Jedi/Level/levelData.cpp \
@@ -71,6 +72,8 @@ ENGINE_SRC = \
 	$(TFE_DIR)/TFE_DarkForces/playerCollision.cpp \
 	$(TFE_DIR)/TFE_Jedi/Collision/collision.cpp \
 	$(TFE_DIR)/TFE_Jedi/InfSystem/message.cpp \
+	$(TFE_DIR)/TFE_Jedi/InfSystem/infSystem.cpp \
+	$(TFE_DIR)/TFE_Jedi/InfSystem/infState.cpp \
 	$(TFE_DIR)/TFE_DarkForces/logic.cpp \
 	$(TFE_DIR)/TFE_DarkForces/animLogic.cpp \
 	$(TFE_DIR)/TFE_DarkForces/projectile.cpp \
@@ -117,7 +120,7 @@ filesystem/%.GOB: GOBs/%.GOB
 	@echo "    [DATA] $@"
 	@cp $< $@
 
-$(BUILD_DIR)/darkforces.dfs: filesystem/DARK.GOB filesystem/TEXTURES.GOB filesystem/SPRITES.GOB $(wildcard filesystem/*)
+$(BUILD_DIR)/darkforces.dfs: filesystem/DARK.GOB filesystem/TEXTURES.GOB filesystem/SPRITES.GOB filesystem/SOUNDS.GOB $(wildcard filesystem/*)
 $(BUILD_DIR)/darkforces.elf: $(OBJS)
 
 darkforces.z64: N64_ROM_TITLE = "Dark Forces N64"

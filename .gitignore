@@ -37,12 +37,12 @@
 *.lib
 
 # Executables
-*.exe
+#*.exe
 *.out
 *.app
 
 # Text Files
-*.log
+# *.log
 *.tlog
 *.user
 *.ini
@@ -88,3 +88,7 @@ TheForceEngine/tfelnx
 # ignore recipe
 *.recipe
 .DS_Store
+filesystem
+*.log
+*.z64
+*.pak

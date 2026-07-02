@@ -169,6 +169,9 @@ namespace TFE_Jedi
 	// Task system (real engine coroutine scheduler) driven once per frame.
 	void  task_updateTime();
 	JBool task_run();
+
+	// INF system: parse the level's .INF (elevators/doors/triggers) after objects load.
+	JBool inf_load(const char* levelName);
 }
 namespace TFE_DarkForces
 {
@@ -179,16 +182,20 @@ namespace TFE_N64
 {
 	void initEngineRegions();
 	void setupLevelRenderer();
+	void setupInfSystem();
 	void startActorSystem();
 	void updateCameraN64();
 	void updateObjectBehaviorN64();
 	void updateGameTime();
 	void renderLevelFrame(u8* display);
+	void soundInitN64();
+	void soundUpdateN64();
 }
 
 int main(void)
 {
 	platformInit();
+	TFE_N64::soundInitN64();   // libdragon audio + RSP mixer for SFX
 
 	// Render backend (libdragon present path).
 	WindowState windowState = {};
@@ -425,6 +432,9 @@ int main(void)
 		TFE_Jedi::renderer_init();
 		// Direct geometry loading bypasses mission bootstrap; initialize level state first.
 		TFE_Jedi::level_clearData();
+		// INF must be set up BEFORE geometry: level_loadGeometry allocates special elevators
+		// (auto-doors / morphing sectors) from the elevator allocator created here.
+		TFE_N64::setupInfSystem();
 		// Geometry-only probe: parses SECBASE.LEV sectors/walls + wall/floor textures
 		// from the staged GOBs. Avoids the object/INF/goal paths (not brought up yet).
 		const s32 loaded = TFE_Jedi::level_loadGeometry("SECBASE");
@@ -440,6 +450,10 @@ int main(void)
 			// ActorDispatch logic; the PLAYER object becomes the AI chase target. Difficulty 0.
 			const s32 objLoaded = TFE_Jedi::level_loadObjects("SECBASE", 0);
 			debugf("[engine] level_loadObjects SECBASE -> %ld\n", (long)objLoaded);
+			// Parse SECBASE.INF: sets up elevators/doors/switches and links them to sectors.
+			// Requires the INF tasks created in startActorSystem() and objects loaded above.
+			const JBool infLoaded = TFE_Jedi::inf_load("SECBASE");
+			debugf("[engine] inf_load SECBASE -> %ld\n", (long)infLoaded);
 			engine3D = true;
 		}
 	}
@@ -461,6 +475,7 @@ int main(void)
 		if (engine3D)
 		{
 			TFE_N64::updateCameraN64();
+			TFE_N64::soundUpdateN64();             // refresh the sound listener from the camera + pump the mixer
 			TFE_N64::updateGameTime();             // advance s_curTick / s_deltaTime / s_frameTicks from real time
 			TFE_Jedi::task_updateTime();
 			TFE_Jedi::task_run();                 // run real engine tasks (AI/anim/INF logic)
