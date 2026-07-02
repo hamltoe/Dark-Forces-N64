@@ -848,6 +848,7 @@ namespace TFE_ExternalData
 			p.falloffAmount = FX(1.0); p.nextFalloffTick = 14; p.damageFalloffDelta = 14;
 			p.force = FX(0.01); p.speed = 250; p.horzBounciness = FX(1.0); p.vertBounciness = FX(1.0);
 			p.bounceCount = 3; p.reflectVariation = 9; p.duration = TICKS(3.0);
+			p.cameraPassSound = "lasrby.voc"; p.reflectSound = "boltref1.voc";
 		}
 		// RIFLE_BOLT (player E-11 + enemy stormtroopers): red 3DO bolt.
 		{
@@ -857,6 +858,7 @@ namespace TFE_ExternalData
 			p.falloffAmount = FX(0.8); p.nextFalloffTick = 14; p.damageFalloffDelta = 14;
 			p.force = FX(0.01); p.speed = 250; p.horzBounciness = FX(1.0); p.vertBounciness = FX(1.0);
 			p.bounceCount = 3; p.reflectVariation = 9; p.duration = TICKS(4.0);
+			p.cameraPassSound = "lasrby.voc"; p.reflectSound = "boltref1.voc";
 		}
 		// THERMAL_DET: thrown/arcing detonator frame; explodes on timeout.
 		{
@@ -865,6 +867,7 @@ namespace TFE_ExternalData
 			p.updateFunc = "arcing"; p.minDamage = 1; p.force = FX(0.1); p.speed = 80;
 			p.horzBounciness = FX(0.45); p.vertBounciness = FX(0.89); p.bounceCount = -1;
 			p.duration = TICKS(3.0); p.explodeOnTimeout = true;
+			p.reflectSound = "thermal1.voc";
 		}
 		// REPEATER: yellow bullet frame (visible sprite).
 		{
@@ -874,6 +877,7 @@ namespace TFE_ExternalData
 			p.falloffAmount = FX(0.3); p.nextFalloffTick = 19660; p.damageFalloffDelta = 19660;
 			p.force = FX(0.03); p.speed = 270; p.bounceCount = 3; p.reflectVariation = 9;
 			p.duration = TICKS(4.0);
+			p.cameraPassSound = "lasrby.voc"; p.reflectSound = "boltref1.voc";
 		}
 		// PLASMA (Fusion Cutter): green plasma WAX (visible sprite).
 		{
@@ -883,6 +887,7 @@ namespace TFE_ExternalData
 			p.falloffAmount = FX(0.6); p.nextFalloffTick = 29; p.damageFalloffDelta = 29;
 			p.force = FX(0.05); p.speed = 100; p.horzBounciness = FX(0.9); p.vertBounciness = FX(0.9);
 			p.bounceCount = 3; p.reflectVariation = 9; p.duration = TICKS(10.0);
+			p.cameraPassSound = "emisby.voc"; p.reflectSound = "bigrefl1.voc";
 		}
 		// MORTAR: arcing shell WAX.
 		{
@@ -905,6 +910,7 @@ namespace TFE_ExternalData
 			p.updateFunc = "standard"; p.damage = 30; p.force = FX(0.061523438); p.speed = 100;
 			p.horzBounciness = FX(0.9); p.vertBounciness = FX(0.9); p.bounceCount = 3;
 			p.reflectVariation = 18; p.duration = TICKS(4.0);
+			p.cameraPassSound = "emisby.voc"; p.reflectSound = "bigrefl1.voc";
 		}
 		// MISSILE (Assault Cannon secondary): missile WAX.
 		{
@@ -912,6 +918,7 @@ namespace TFE_ExternalData
 			p.assetType = "sprite"; p.asset = "wmsl.wax"; p.zeroWidth = true;
 			p.updateFunc = "standard"; p.force = FX(1.0); p.speed = 74;
 			p.horzBounciness = FX(0.9); p.vertBounciness = FX(0.9); p.duration = TICKS(7.0);
+			p.flightSound = "rocket-1.voc";
 		}
 		// TURRET_BOLT (wall turrets): green 3DO bolt.
 		{
@@ -921,6 +928,7 @@ namespace TFE_ExternalData
 			p.falloffAmount = FX(1.0); p.nextFalloffTick = 14; p.damageFalloffDelta = 14;
 			p.force = FX(0.03); p.speed = 300; p.horzBounciness = FX(1.0); p.vertBounciness = FX(1.0);
 			p.bounceCount = 3; p.reflectVariation = 9; p.duration = TICKS(3.0);
+			p.cameraPassSound = "lasrby.voc"; p.reflectSound = "boltref1.voc";
 		}
 		// REMOTE_BOLT (interrogation/remote droids): green 3DO bolt.
 		{
@@ -930,6 +938,7 @@ namespace TFE_ExternalData
 			p.falloffAmount = FX(1.0); p.nextFalloffTick = 14; p.damageFalloffDelta = 14;
 			p.force = FX(0.03); p.speed = 300; p.horzBounciness = FX(1.0); p.vertBounciness = FX(1.0);
 			p.bounceCount = 3; p.reflectVariation = 9; p.duration = TICKS(3.0);
+			p.cameraPassSound = "lasrby.voc"; p.reflectSound = "boltref1.voc";
 		}
 
 		#undef FX
@@ -1200,6 +1209,17 @@ namespace TFE_N64
 		s_n64WpnFireSnd[8] = sound_load("concuss6.voc", SOUND_PRIORITY_HIGH3);
 		s_n64WpnFireSnd[9] = sound_load("plasma4.voc",  SOUND_PRIORITY_HIGH3);
 		s_n64WpnChangeSnd  = sound_load("weapon1.voc",  SOUND_PRIORITY_LOW4);
+
+		// Enemy weapon-fire sounds. The actor attack code plays attackMod->attackPrimSndSrc
+		// (copied from these globals in each enemy's _setup) on every shot; weapon.cpp normally
+		// loads them but isn't linked, so they stay 0 (silent) without this. Stormtroopers use
+		// s_rifleSndSrc, officers s_pistolSndSrc (troopers.cpp). sound_load dedups, so the VOCs
+		// shared with the player weapons above cost no extra memory.
+		s_pistolSndSrc      = sound_load("pistol-1.voc", SOUND_PRIORITY_HIGH0);
+		s_rifleSndSrc       = sound_load("rifle-1.voc",  SOUND_PRIORITY_HIGH0);
+		s_concussion5SndSrc = sound_load("concuss5.voc", SOUND_PRIORITY_HIGH3);
+		s_plasma4SndSrc     = sound_load("plasma4.voc",  SOUND_PRIORITY_HIGH3);
+		s_missile1SndSrc    = sound_load("missile1.voc", SOUND_PRIORITY_HIGH3);
 
 		// Projectiles must exist before enemies attack: defaultAttackFunc() fires via
 		// createProjectile(), which returns null (-> NULL deref crash) if s_projectiles
